@@ -383,8 +383,9 @@ def _get_manifest_paths(model: str, tag: str, config: ConfigManager) -> tuple:
     # Manifest path components: registry.ollama.ai/library/<model>/<tag>
     manifest_dir = f"registry.ollama.ai/library/{model}"
     
-    base_manifest_path = Path(base_storage) / "manifests" / manifest_dir / tag
-    remote_manifest_path = Path(remote_storage) / "manifests" / manifest_dir / tag
+    # Use .parent to look for manifests directory at the parent level of storage
+    base_manifest_path = Path(base_storage).parent / "manifests" / manifest_dir / tag
+    remote_manifest_path = Path(remote_storage).parent / "manifests" / manifest_dir / tag
     
     return base_manifest_path, remote_manifest_path
 
@@ -560,21 +561,16 @@ def cmd_thaw(args: argparse.Namespace) -> int:
         print("Error: remoteStorage not configured. Run 'omanage config --set remoteStorage=<path>'", file=sys.stderr)
         return 1
     
-    # Get manifest name from model name (e.g., "phi3:mini" -> manifest is "mini" in "registry.ollama.ai/library/phi3/")
-    if ':' in model_name:
-        model_parts = model_name.split(':', 1)
-        model = model_parts[0]
-        tag = model_parts[1]
-    else:
-        model = model_name
-        tag = 'latest'
+    # Get manifest name from model name using helper function
+    try:
+        model, tag = _parse_model_name(model_name)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     
-    # Manifest path components: registry.ollama.ai/library/<model>/<tag>
-    manifest_dir = f"registry.ollama.ai/library/{model}"
+    # Get manifest paths using helper function
+    base_manifest_path, remote_manifest_path = _get_manifest_paths(model, tag, config)
     manifest_name = tag
-    
-    base_manifest_path = Path(base_storage).parent / "manifests" / manifest_dir / manifest_name
-    remote_manifest_path = Path(remote_storage).parent / "manifests" / manifest_dir / manifest_name
     
     source_path = Path(remote_storage) / model_meta['blobName']
     dest_path = Path(base_storage) / model_meta['blobName']
