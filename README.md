@@ -101,3 +101,13 @@ omanage config --set baseStorage=/mnt/storage/ollama
 ## License
 
 MIT
+
+## Note
+
+This application was coded with assistance from Cline and Qwen3-coder-next:q8_0.
+
+This application has no affiliation whatsoever with Ollama.  The name "Ollama" is owned by its owner.  It is only used here as a descriptor for what it does, and no other affiliation or use of the mark is claimed.
+
+The Ollama application must be installed for this application to work (or have meaning).  See https://ollama.com.
+
+If this application helps you, please let me know.

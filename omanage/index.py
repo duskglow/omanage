@@ -7,6 +7,11 @@ from typing import Any, Dict, List, Optional
 from .config import ConfigManager
 
 
+class OmanageIndexError(Exception):
+    """Index-related errors."""
+    pass
+
+
 class IndexManager:
     """Manages the .omanage.index.json model metadata index."""
     
@@ -41,7 +46,7 @@ class IndexManager:
                     if "models" not in self._index:
                         self._index["models"] = {}
             except json.JSONDecodeError as e:
-                raise IndexError(f"Invalid JSON in index file: {e}")
+                raise OmanageIndexError(f"Invalid JSON in index file: {e}")
         
         self._loaded = True
         return self._index
@@ -53,7 +58,8 @@ class IndexManager:
         return self._index["models"].get(model_name)
     
     def set_model(self, model_name: str, blob_sha: str, blob_name: str, 
-                  frozen: bool = False, compressed: bool = False) -> None:
+                  frozen: bool = False, compressed: bool = False,
+                  manifest_name: Optional[str] = None) -> None:
         """
         Set or update model metadata.
         
@@ -63,6 +69,7 @@ class IndexManager:
             blob_name: Name of the blob file
             frozen: Whether the model is frozen
             compressed: Whether the blob is compressed
+            manifest_name: Name of the manifest file (without path)
         """
         if not self._loaded:
             self.load()
@@ -71,7 +78,8 @@ class IndexManager:
             "blobSha": blob_sha,
             "blobName": blob_name,
             "frozen": frozen,
-            "compressed": compressed
+            "compressed": compressed,
+            "manifestName": manifest_name
         }
     
     def remove_model(self, model_name: str) -> bool:
@@ -120,8 +128,39 @@ class IndexManager:
         if not self._loaded:
             self.load()
         return self._index
+    
+    def get_manifest_path(self, model_meta: dict, frozen: bool, config: ConfigManager) -> Path:
+        """
+        Get the expected path for a model's manifest file.
+        
+        Args:
+            model_meta: Model metadata from index
+            frozen: Whether the model is frozen
+            config: ConfigManager instance
+            
+        Returns:
+            Path to the manifest file
+        """
+        config.load()
+        
+        if frozen:
+            # Manifest should be in remote storage
+            remote_storage = config.get('remoteStorage')
+            if not remote_storage:
+                raise OmanageIndexError("remoteStorage not configured")
+            manifest_name = model_meta.get('manifestName')
+            if not manifest_name:
+                raise OmanageIndexError("manifestName not found in model metadata")
+            return Path(remote_storage) / manifest_name
+        else:
+            # Manifest should be in base storage
+            base_storage = config.get('baseStorage')
+            if not base_storage:
+                raise OmanageIndexError("baseStorage not configured")
+            manifest_name = model_meta.get('manifestName')
+            if not manifest_name:
+                raise OmanageIndexError("manifestName not found in model metadata")
+            return Path(base_storage) / manifest_name
 
 
-class IndexError(Exception):
-    """Index-related errors."""
-    pass
+# Keep the class definition but with new name (removed duplicate)
