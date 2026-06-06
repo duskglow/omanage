@@ -69,7 +69,7 @@ class OmanageAPI:
         api.freeze_model("llama3:8b", compress=True)
     """
     
-    def __init__(self, project_dir: Path = None):
+    def __init__(self, project_dir: Optional[Path] = None):
         """
         Initialize the API with a project directory.
         
@@ -217,7 +217,11 @@ class OmanageAPI:
         lock = _FileLock(dest_lock_path)
         
         try:
-            lock.acquire()
+            if not lock.acquire():
+                raise FileOperationError(
+                    "Could not acquire file lock - another operation may be in progress. "
+                    f"Try again in a few seconds."
+                )
             
             # Re-check after acquiring lock
             if dest_path.exists():
@@ -346,7 +350,11 @@ class OmanageAPI:
         lock = _FileLock(dest_lock_path)
         
         try:
-            lock.acquire()
+            if not lock.acquire():
+                raise FileOperationError(
+                    "Could not acquire file lock - another operation may be in progress. "
+                    f"Try again in a few seconds."
+                )
             
             # Re-check after acquiring lock
             if dest_path.exists():
@@ -575,16 +583,16 @@ class OmanageAPI:
         base_storage_path = Path(base_storage).resolve()
         remote_storage_path = Path(remote_storage).resolve()
         
-        # Build manifest paths relative to the storage directory
+        # Build manifest paths relative to the storage directory's parent
+        # Ollama convention: blobs/ and manifests/ are siblings under models/
+        # e.g., baseStorage=/home/user/.ollama/models/blobs/ -> manifests at /home/user/.ollama/models/manifests/
         manifest_dir = Path(MANIFEST_REGISTRY_PATH) / model
         
-        # Create manifest paths within the storage directory hierarchy
-        # Use the storage directory itself as the base, not its parent
-        base_manifest_path = base_storage_path / MANIFEST_BASE_DIR / manifest_dir / tag
-        remote_manifest_path = remote_storage_path / MANIFEST_BASE_DIR / manifest_dir / tag
+        base_manifest_path = base_storage_path.parent / MANIFEST_BASE_DIR / manifest_dir / tag
+        remote_manifest_path = remote_storage_path.parent / MANIFEST_BASE_DIR / manifest_dir / tag
         
         # Validate paths don't traverse outside expected directories
-        validate_path_traversal(base_manifest_path, base_storage_path, "base manifest path")
-        validate_path_traversal(remote_manifest_path, remote_storage_path, "remote manifest path")
+        validate_path_traversal(base_manifest_path, base_storage_path.parent, "base manifest path")
+        validate_path_traversal(remote_manifest_path, remote_storage_path.parent, "remote manifest path")
         
         return base_manifest_path, remote_manifest_path

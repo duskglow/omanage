@@ -94,11 +94,6 @@ def create_parser() -> argparse.ArgumentParser:
         "model_name",
         help="Model to thaw"
     )
-    thaw_parser.add_argument(
-        "--compress",
-        action="store_true",
-        help="Decompress the blob during move"
-    )
     thaw_parser.set_defaults(func=_get_command_handler('cmd_thaw'))
     
     # verify command

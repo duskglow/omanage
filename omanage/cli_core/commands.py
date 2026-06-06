@@ -8,10 +8,6 @@ from typing import Optional
 from ..config import ConfigManager, ConfigError
 from ..index import IndexManager
 from ..utils import (
-    ProgressBar,
-    compress_file,
-    decompress_file,
-    detect_compression,
     validate_model_name,
     InvalidModelNameError,
     ValidationError,
@@ -52,32 +48,6 @@ def get_model_blob_info(model_name: str) -> Optional[dict]:
     return api_get_model_blob_info(model_name)
 
 
-def get_blob_path(model_meta: dict, frozen: bool, config: ConfigManager) -> Path:
-    """
-    Get the expected path for a model's blob file.
-    
-    Args:
-        model_meta: Model metadata from index
-        frozen: Whether the model is frozen
-        config: ConfigManager instance
-        
-    Returns:
-        Path to the blob file
-    """
-    config.load()
-    
-    if frozen:
-        remote_storage = config.get('remoteStorage')
-        if not remote_storage:
-            raise CliError("remoteStorage not configured")
-        return Path(remote_storage) / model_meta['blobName']
-    else:
-        base_storage = config.get('baseStorage')
-        if not base_storage:
-            raise CliError("baseStorage not configured")
-        return Path(base_storage) / model_meta['blobName']
-
-
 # Command functions
 
 def cmd_config(args: argparse.Namespace) -> int:
@@ -90,6 +60,9 @@ def cmd_config(args: argparse.Namespace) -> int:
     
     # Handle --set option
     if args.set:
+        if '=' not in args.set:
+            print("Error: Config value must be in KEY=VALUE format", file=sys.stderr)
+            return 1
         key, value = args.set.split('=', 1)
         try:
             config.set(key, value)
@@ -142,13 +115,12 @@ Use 'omanage <command> --help' for more information about a command.
 def cmd_list(args: argparse.Namespace) -> int:
     """Handle the list command."""
     config_dir = Path.cwd()
-    config = ConfigManager(config_dir)
     index = IndexManager(config_dir)
     
     # Load index
     try:
         index.load()
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Error loading index: {e}", file=sys.stderr)
         return 1
     
@@ -190,7 +162,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # Get models from Ollama
     try:
         models = get_ollama_models()
-    except CliError as e:
+    except (CliError, SubprocessError, OmanageAPIError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     
@@ -243,14 +215,14 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     # Load index
     try:
         index.load()
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Error loading index: {e}", file=sys.stderr)
         return 1
     
     # Get models from Ollama
     try:
         models = get_ollama_models()
-    except CliError as e:
+    except (CliError, SubprocessError, OmanageAPIError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     
@@ -320,12 +292,8 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     try:
         result = api.freeze_model(model_name, compress)
         
-        if result['success']:
-            print(f"\nModel '{model_name}' frozen successfully.")
-            return 0
-        else:
-            print(f"Model '{model_name}' freeze failed: {result.get('message', 'Unknown error')}")
-            return 1
+        print(f"\nModel '{model_name}' frozen successfully.")
+        return 0
             
     except ModelNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -336,7 +304,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     except FileOperationError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
@@ -375,7 +343,7 @@ def cmd_thaw(args: argparse.Namespace) -> int:
     except FileOperationError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         return 1
 
@@ -392,12 +360,29 @@ def cmd_verify(args: argparse.Namespace) -> int:
             print("All files verified successfully.")
             return 0
         elif result['status'] == 'error':
-            print(f"Verification failed: {result.get('error', 'Unknown error')}")
+            error_msg = result.get('error', 'Unknown error')
+            print(f"Verification failed: {error_msg}")
+            if result.get('missing'):
+                print("\nMissing files:")
+                for item in result['missing']:
+                    print(f"  - {item['model']}: {item['path']}")
+                    if 'issue' in item:
+                        print(f"    Issue: {item['issue']}")
             return 1
         else:
             print(f"Verification complete with issues.")
+            if result.get('missing'):
+                print("\nMissing files:")
+                for item in result['missing']:
+                    print(f"  - {item['model']}: {item['path']}")
+                    if 'issue' in item:
+                        print(f"    Issue: {item['issue']}")
+            if result.get('mismatched'):
+                print("\nMismatched files:")
+                for item in result['mismatched']:
+                    print(f"  - {item['model']}: {item['issue']}")
             return 1
             
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Error during verification: {e}", file=sys.stderr)
         return 1

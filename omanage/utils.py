@@ -140,11 +140,12 @@ class ProgressBar:
     
     def _format_size(self, size: int) -> str:
         """Format size in bytes to human-readable string."""
+        current_size = float(size)
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size < 1024:
-                return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} PB"
+            if current_size < 1024:
+                return f"{current_size:.1f} {unit}"
+            current_size /= 1024
+        return f"{current_size:.1f} PB"
 
 
 def compress_file(source_path: Path, dest_path: Path, progress_bar: Optional[ProgressBar] = None) -> None:
@@ -156,8 +157,6 @@ def compress_file(source_path: Path, dest_path: Path, progress_bar: Optional[Pro
         dest_path: Path to compressed output
         progress_bar: Optional progress bar to update
     """
-    source_size = source_path.stat().st_size
-    
     with open(source_path, 'rb') as f_in:
         with gzip.open(dest_path, 'wb') as f_out:
             if progress_bar:
@@ -182,8 +181,6 @@ def decompress_file(source_path: Path, dest_path: Path, progress_bar: Optional[P
         dest_path: Path to decompressed output
         progress_bar: Optional progress bar to update
     """
-    source_size = source_path.stat().st_size
-    
     with gzip.open(source_path, 'rb') as f_in:
         with open(dest_path, 'wb') as f_out:
             if progress_bar:
@@ -328,7 +325,8 @@ def parse_model_name(model_name: str) -> Tuple[str, str]:
     Raises:
         InvalidModelNameError: If model_name is empty or invalid
     """
-    validate_model_name(model_name)
+    if not model_name:
+        raise InvalidModelNameError("Model name cannot be empty")
     
     if ':' in model_name:
         model_parts = model_name.split(':', 1)

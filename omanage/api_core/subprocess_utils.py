@@ -144,8 +144,8 @@ def get_model_blob_info(model_name: str) -> Optional[dict]:
                 from_path = line[5:].strip()
                 blob_name = from_path.rsplit('/', 1)[-1] if '/' in from_path else from_path
                 return {
-                    "blobSha": blob_name,
-                    "blobName": blob_name
+                    "blobSha": blob_name,  # Ollama uses SHA256 digest as blob identifier/filename
+                    "blobName": blob_name  # Full blob filename (same as SHA in Ollama's convention)
                 }
         
         return None

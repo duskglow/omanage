@@ -34,7 +34,8 @@ def atomic_copy_with_lock(src: Path, dst: Path) -> None:
     # This fails if the file already exists, preventing TOCTOU
     try:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        with os.fdopen(os.open(dst, flags), 'wb') as dst_file:
+        fd = os.open(dst, flags, 0o600)
+        with os.fdopen(fd, 'wb') as dst_file:
             with src.open('rb') as src_file:
                 while True:
                     chunk = src_file.read(CHUNK_SIZE)
@@ -85,7 +86,7 @@ def atomic_move_with_lock(src: Path, dst: Path) -> None:
         try:
             atomic_copy_with_lock(src, dst)
             src.unlink()
-        except Exception as e:
+        except OSError as e:
             raise FileOperationError(f"Atomic move failed: {e}")
 
 

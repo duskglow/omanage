@@ -50,12 +50,12 @@ class ConfigManager:
             try:
                 with open(self.config_file, 'r') as f:
                     self._config = json.load(f)
-                    # Merge with defaults for any missing keys
-                    for key, value in self.DEFAULT_CONFIG.items():
-                        if key not in self._config:
-                            self._config[key] = value
+                # Merge with defaults for any missing keys
+                for key, value in self.DEFAULT_CONFIG.items():
+                    if key not in self._config:
+                        self._config[key] = value
             except json.JSONDecodeError as e:
-                raise ConfigError(f"Invalid JSON in config file: {e}")
+                raise ConfigError(f"Invalid JSON in config file: {e}") from e
         
         self._loaded = True
         return self._config

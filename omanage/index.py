@@ -46,7 +46,7 @@ class IndexManager:
                     if "models" not in self._index:
                         self._index["models"] = {}
             except json.JSONDecodeError as e:
-                raise OmanageIndexError(f"Invalid JSON in index file: {e}")
+                raise OmanageIndexError(f"Invalid JSON in index file: {e}") from e
         
         self._loaded = True
         return self._index
@@ -141,25 +141,32 @@ class IndexManager:
         Returns:
             Path to the manifest file
         """
+        from .utils import validate_model_name, InvalidModelNameError, sanitize_for_path_component
+        
         config.load()
+        
+        manifest_name = model_meta.get('manifestName')
+        if not manifest_name:
+            raise OmanageIndexError("manifestName not found in model metadata")
+        
+        # Validate manifest name to prevent path traversal from corrupted index
+        try:
+            validate_model_name(manifest_name)
+        except InvalidModelNameError:
+            # Fall back to sanitization if the name doesn't pass strict validation
+            manifest_name = sanitize_for_path_component(manifest_name)
         
         if frozen:
             # Manifest should be in remote storage
             remote_storage = config.get('remoteStorage')
             if not remote_storage:
                 raise OmanageIndexError("remoteStorage not configured")
-            manifest_name = model_meta.get('manifestName')
-            if not manifest_name:
-                raise OmanageIndexError("manifestName not found in model metadata")
             return Path(remote_storage) / manifest_name
         else:
             # Manifest should be in base storage
             base_storage = config.get('baseStorage')
             if not base_storage:
                 raise OmanageIndexError("baseStorage not configured")
-            manifest_name = model_meta.get('manifestName')
-            if not manifest_name:
-                raise OmanageIndexError("manifestName not found in model metadata")
             return Path(base_storage) / manifest_name
 
 
