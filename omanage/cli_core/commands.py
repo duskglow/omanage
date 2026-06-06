@@ -1,7 +1,6 @@
 """Command handler functions for omanage CLI."""
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,6 +17,11 @@ from ..utils import (
     ValidationError,
 )
 from ..api import OmanageAPI, OmanageAPIError, ModelNotFoundError, StorageNotConfiguredError, FileOperationError
+from ..api_core.subprocess_utils import (
+    get_ollama_models as api_get_ollama_models,
+    get_model_blob_info as api_get_model_blob_info,
+    SubprocessError,
+)
 
 
 class CliError(Exception):
@@ -27,37 +31,17 @@ class CliError(Exception):
 
 def get_ollama_models() -> list:
     """
-    Get list of installed Ollama models.
+    Get list of installed Ollama models using secure subprocess wrapper.
     
     Returns:
         List of model dictionaries with 'name' key
     """
-    try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        lines = result.stdout.strip().split('\n')
-        
-        models = []
-        for line in lines[1:]:  # Skip header line
-            if line.strip():
-                parts = line.split()
-                if parts:
-                    models.append({"name": parts[0]})
-        
-        return models
-    except subprocess.CalledProcessError:
-        return []
-    except FileNotFoundError:
-        raise CliError("Ollama not found. Please install Ollama first.")
+    return api_get_ollama_models()
 
 
 def get_model_blob_info(model_name: str) -> Optional[dict]:
     """
-    Get blob information for a model from its modelfile.
+    Get blob information for a model from its modelfile using secure subprocess wrapper.
     
     Args:
         model_name: Name of the model to query
@@ -65,28 +49,7 @@ def get_model_blob_info(model_name: str) -> Optional[dict]:
     Returns:
         Dictionary with 'blobSha' and 'blobName' keys, or None if not found
     """
-    try:
-        result = subprocess.run(
-            ["ollama", "show", "--modelfile", model_name],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        
-        for line in result.stdout.split('\n'):
-            if line.startswith("FROM "):
-                from_path = line[5:].strip()
-                blob_name = Path(from_path).name
-                return {
-                    "blobSha": blob_name,
-                    "blobName": blob_name
-                }
-        
-        return None
-    except subprocess.CalledProcessError:
-        return None
-    except FileNotFoundError:
-        raise CliError("Ollama not found. Please install Ollama first.")
+    return api_get_model_blob_info(model_name)
 
 
 def get_blob_path(model_meta: dict, frozen: bool, config: ConfigManager) -> Path:

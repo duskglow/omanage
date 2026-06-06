@@ -2,10 +2,16 @@
 
 import os
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
+
+from .api_core.subprocess_utils import (
+    SubprocessError,
+    run_ollama_command,
+    get_ollama_models as get_ollama_models_secure,
+    get_model_blob_info as get_model_blob_info_secure,
+)
 
 from .config import ConfigManager, ConfigError
 from .index import IndexManager, OmanageIndexError
@@ -34,6 +40,11 @@ from .api_core.errors import (
     ModelAlreadyThawedError,
 )
 from .api_core.locking import _FileLock
+from .api_core.file_utils import (
+    atomic_copy_with_temp,
+    create_secure_tempfile,
+    safe_manifest_transfer,
+)
 
 # Constants for magic values
 LOCK_FILE_SUFFIX = '.lock'
@@ -238,13 +249,11 @@ class OmanageAPI:
                 )
                 
                 if base_manifest_path.exists():
-                    remote_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Create a temp file for atomic operation
-                    temp_manifest_path = dest_path.parent / f"{dest_path.name}.manifest.tmp"
-                    shutil.copy2(base_manifest_path, temp_manifest_path)
-                    temp_manifest_path.rename(remote_manifest_path)
-                    base_manifest_path.unlink()
+                    # Use safe_manifest_transfer for atomic transfer with rollback handling
+                    try:
+                        safe_manifest_transfer(base_manifest_path, remote_manifest_path, delete_source=True)
+                    except FileOperationError as e:
+                        raise FileOperationError(f"Failed to transfer manifest file: {e}")
                 
                 self.index.set_model(
                     model_name=model_name,
@@ -370,13 +379,11 @@ class OmanageAPI:
                 )
                 
                 if remote_manifest_path.exists():
-                    base_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-                    
-                    # Create a temp file for atomic operation
-                    temp_manifest_path = base_path / f"{base_path.name}.manifest.tmp"
-                    shutil.copy2(remote_manifest_path, temp_manifest_path)
-                    temp_manifest_path.rename(base_manifest_path)
-                    remote_manifest_path.unlink()
+                    # Use safe_manifest_transfer for atomic transfer with rollback handling
+                    try:
+                        safe_manifest_transfer(remote_manifest_path, base_manifest_path, delete_source=True)
+                    except FileOperationError as e:
+                        raise FileOperationError(f"Failed to transfer manifest file: {e}")
                 
                 self.index.set_model(
                     model_name=model_name,
@@ -530,52 +537,20 @@ class OmanageAPI:
         return self._get_model_blob_info(model_name)
     
     def _get_ollama_models(self) -> List[Dict[str, str]]:
-        """Get list of installed Ollama models."""
+        """Get list of installed Ollama models using secure subprocess wrapper."""
         try:
-            result = subprocess.run(
-                ["ollama", "list"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            lines = result.stdout.strip().split('\n')
-            
-            models = []
-            for line in lines[1:]:  # Skip header line
-                if line.strip():
-                    parts = line.split()
-                    if parts:
-                        models.append({"name": parts[0]})
-            
-            return models
-        except subprocess.CalledProcessError:
-            return []
-        except FileNotFoundError:
+            return get_ollama_models_secure()
+        except SubprocessError:
             raise OllamaNotInstalledError("Ollama not found. Please install Ollama first.")
     
     def _get_model_blob_info(self, model_name: str) -> Optional[Dict[str, str]]:
-        """Get blob information for a model from its modelfile."""
+        """Get blob information for a model from its modelfile using secure subprocess wrapper."""
         try:
-            result = subprocess.run(
-                ["ollama", "show", "--modelfile", model_name],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            
-            for line in result.stdout.split('\n'):
-                if line.startswith("FROM "):
-                    from_path = line[5:].strip()
-                    blob_name = Path(from_path).name
-                    return {
-                        "blobSha": blob_name,
-                        "blobName": blob_name
-                    }
-            
-            return None
-        except subprocess.CalledProcessError:
-            return None
-        except FileNotFoundError:
+            result = get_model_blob_info_secure(model_name)
+            if result is None:
+                return None
+            return result
+        except SubprocessError:
             raise OllamaNotInstalledError("Ollama not found. Please install Ollama first.")
     
     def _get_manifest_paths(self, model: str, tag: str, base_storage: str, remote_storage: str) -> Tuple[Path, Path]:
@@ -596,15 +571,20 @@ class OmanageAPI:
         if tag:
             validate_model_name(tag)
         
-        # Build manifest paths
+        # Use resolve() to get absolute paths for security
+        base_storage_path = Path(base_storage).resolve()
+        remote_storage_path = Path(remote_storage).resolve()
+        
+        # Build manifest paths relative to the storage directory
         manifest_dir = Path(MANIFEST_REGISTRY_PATH) / model
         
-        base_manifest_path = Path(base_storage).parent / MANIFEST_BASE_DIR / manifest_dir / tag
-        remote_manifest_path = Path(remote_storage).parent / MANIFEST_BASE_DIR / manifest_dir / tag
+        # Create manifest paths within the storage directory hierarchy
+        # Use the storage directory itself as the base, not its parent
+        base_manifest_path = base_storage_path / MANIFEST_BASE_DIR / manifest_dir / tag
+        remote_manifest_path = remote_storage_path / MANIFEST_BASE_DIR / manifest_dir / tag
         
-        # Validate paths don't traverse
-        base_storage_path = Path(base_storage).resolve()
-        validate_path_traversal(base_manifest_path, base_storage_path.parent, "base manifest path")
-        validate_path_traversal(remote_manifest_path, Path(remote_storage).resolve().parent, "remote manifest path")
+        # Validate paths don't traverse outside expected directories
+        validate_path_traversal(base_manifest_path, base_storage_path, "base manifest path")
+        validate_path_traversal(remote_manifest_path, remote_storage_path, "remote manifest path")
         
         return base_manifest_path, remote_manifest_path
