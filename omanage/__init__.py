@@ -12,16 +12,8 @@ from .utils import (
 )
 from .index import OmanageIndexError
 from .config import ConfigError
-from .api import (
-    OmanageAPI,
-    OmanageAPIError,
-    OllamaNotInstalledError,
-    ModelNotFoundError,
-    StorageNotConfiguredError,
-    FileOperationError,
-    ModelAlreadyFrozenError,
-    ModelAlreadyThawedError,
-)
+from .api import OmanageAPI
+from .api_core.errors import OmanageAPIError, OllamaNotInstalledError, ModelNotFoundError, StorageNotConfiguredError, FileOperationError, ModelAlreadyFrozenError, ModelAlreadyThawedError
 
 __all__ = [
     '__version__',

@@ -24,133 +24,21 @@ from .utils import (
     CHUNK_SIZE,
     PROGRESS_UPDATE_INTERVAL,
 )
-
+from .api_core.errors import (
+    OmanageAPIError,
+    OllamaNotInstalledError,
+    ModelNotFoundError,
+    StorageNotConfiguredError,
+    FileOperationError,
+    ModelAlreadyFrozenError,
+    ModelAlreadyThawedError,
+)
+from .api_core.locking import _FileLock
 
 # Constants for magic values
 LOCK_FILE_SUFFIX = '.lock'
 MANIFEST_BASE_DIR = "manifests"
 MANIFEST_REGISTRY_PATH = "registry.ollama.ai/library"
-
-# Cross-platform file locking
-# fcntl is Unix-only, use a dummy context manager on Windows
-try:
-    import fcntl
-    HAS_FCNTL = True
-except ImportError:
-    HAS_FCNTL = False
-
-
-class _DummyLock:
-    """Dummy lock context manager for Windows (fcntl not available)."""
-    def __init__(self, lock_path: Path):
-        self.lock_path = lock_path
-        self._lock_file = None
-    
-    def __enter__(self):
-        # Create lock file for Windows (advisory locking)
-        if not self.lock_path.exists():
-            self.lock_path.touch()
-        self._lock_file = self.lock_path.open('w')
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._lock_file:
-            self._lock_file.close()
-        if self.lock_path.exists():
-            try:
-                self.lock_path.unlink()
-            except:
-                pass
-        return False
-
-
-class OmanageAPIError(OmanageError):
-    """Base exception for omanage API errors."""
-    pass
-
-
-class OllamaNotInstalledError(OmanageAPIError):
-    """Ollama CLI is not installed or not in PATH."""
-    pass
-
-
-class ModelNotFoundError(OmanageAPIError):
-    """Model not found in index."""
-    pass
-
-
-class StorageNotConfiguredError(OmanageAPIError):
-    """Storage paths not configured."""
-    pass
-
-
-class FileOperationError(OmanageAPIError):
-    """File operation failed."""
-    pass
-
-
-class ModelAlreadyFrozenError(OmanageAPIError):
-    """Model is already in frozen state."""
-    pass
-
-
-class ModelAlreadyThawedError(OmanageAPIError):
-    """Model is already in thawed state."""
-    pass
-
-
-class _FileLock:
-    """Cross-platform file locking context manager."""
-    
-    def __init__(self, lock_path: Path, timeout: float = 5.0):
-        self.lock_path = lock_path
-        self.timeout = timeout
-        self._lock_file = None
-    
-    def acquire(self) -> bool:
-        """Acquire the lock."""
-        import time
-        start_time = time.time()
-        
-        while time.time() - start_time < self.timeout:
-            if not self.lock_path.exists():
-                try:
-                    # Create lock file atomically
-                    self.lock_path.touch(exist_ok=False)
-                    self._lock_file = self.lock_path.open('w')
-                    if HAS_FCNTL and self._lock_file:
-                        fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
-                    return True
-                except (FileExistsError, OSError):
-                    time.sleep(0.1)
-                    continue
-        
-        return False
-    
-    def release(self) -> None:
-        """Release the lock."""
-        if self._lock_file:
-            try:
-                if HAS_FCNTL:
-                    fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
-            except:
-                pass
-            self._lock_file.close()
-            self._lock_file = None
-        
-        if self.lock_path.exists():
-            try:
-                self.lock_path.unlink()
-            except:
-                pass
-    
-    def __enter__(self) -> '_FileLock':
-        self.acquire()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        self.release()
-        return False
 
 
 class OmanageAPI:
