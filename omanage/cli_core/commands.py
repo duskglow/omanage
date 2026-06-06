@@ -201,10 +201,10 @@ def cmd_init(args: argparse.Namespace) -> int:
                 print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
     except KeyboardInterrupt:
         print("\nOperation cancelled. Saving partial progress...", file=sys.stderr)
-    
-    # Save index (always, even on partial progress)
-    index.save()
-    print(f"\nInitialized {len(models)} model(s) in index.")
+    finally:
+        # Save index (always, even on partial progress or unexpected errors)
+        index.save()
+        print(f"\nInitialized {len(models)} model(s) in index.")
     
     return 0
 
@@ -271,10 +271,10 @@ def cmd_refresh(args: argparse.Namespace) -> int:
                 print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
     except KeyboardInterrupt:
         print("\nOperation cancelled. Saving partial progress...", file=sys.stderr)
-    
-    # Save index (always, even on partial progress)
-    index.save()
-    print(f"\nRefreshed {len(models)} model(s).")
+    finally:
+        # Save index (always, even on partial progress or unexpected errors)
+        index.save()
+        print(f"\nRefreshed {len(models)} model(s).")
     
     return 0
 
@@ -385,8 +385,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
                     if 'issue' in item:
                         print(f"    Issue: {item['issue']}")
             return 1
-        else:
-            print(f"Verification complete with issues.")
+        elif result['status'] == 'mismatch':
+            print("Verification complete with mismatches.")
             if result.get('missing'):
                 print("\nMissing files:")
                 for item in result['missing']:
@@ -397,6 +397,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 print("\nMismatched files:")
                 for item in result['mismatched']:
                     print(f"  - {item['model']}: {item['issue']}")
+            return 1
+        else:
+            print(f"Verification complete with unexpected status: {result['status']}")
             return 1
             
     except (OSError, ValueError) as e:

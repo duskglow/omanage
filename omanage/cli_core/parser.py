@@ -147,7 +147,9 @@ def main(args: Optional[List[str]] = None) -> int:
     # Execute the command
     try:
         return parsed_args.func(parsed_args)
-    except (OSError, ValueError) as e:
+    except Exception as e:
+        # Catch all application exceptions to prevent stack trace leakage
+        # Custom exception classes carry user-friendly messages
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

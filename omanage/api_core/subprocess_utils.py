@@ -64,7 +64,15 @@ def run_ollama_command(
     
     # Apply custom binary if specified
     if ollama_binary and cmd:
-        cmd = [ollama_binary] + cmd[1:]
+        # Validate the binary path exists and is executable to prevent
+        # arbitrary command execution via a malicious ollama_binary value.
+        import shutil
+        resolved = shutil.which(ollama_binary)
+        if not resolved:
+            raise SubprocessError(
+                f"Ollama binary not found or not executable: {ollama_binary}"
+            )
+        cmd = [resolved] + cmd[1:]
     
     # Validate command arguments are safe strings
     for arg in cmd:

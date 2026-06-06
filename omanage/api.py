@@ -391,12 +391,13 @@ class OmanageAPI:
                     if not result:
                         raise FileOperationError(f"Failed to transfer manifest file from {remote_manifest_path} to {base_manifest_path}")
                 
+                # After successful thaw, the blob is always decompressed in base storage
                 self.index.set_model(
                     model_name=model_name,
                     blob_sha=model_meta['blobSha'],
                     blob_name=model_meta['blobName'],
                     frozen=False,
-                    compressed=is_compressed,
+                    compressed=False,
                     manifest_name=tag
                 )
                 self.index.save()

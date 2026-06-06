@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .config import ConfigManager
+from .utils import validate_model_name, InvalidModelNameError
 
 
 class OmanageIndexError(Exception):
@@ -75,10 +76,32 @@ class IndexManager:
                     )
                 
                 with open(self.index_file, 'r') as f:
-                    self._index = json.load(f)
-                    # Ensure models key exists
-                    if "models" not in self._index:
-                        self._index["models"] = {}
+                    raw = json.load(f)
+                
+                # Schema validation: ensure correct structure and types
+                if not isinstance(raw, dict):
+                    raise OmanageIndexError("Index file must contain a JSON object")
+                if "models" not in raw:
+                    raw["models"] = {}
+                if not isinstance(raw["models"], dict):
+                    raise OmanageIndexError("Index 'models' field must be an object")
+                
+                # Validate each model entry has required string fields
+                for model_name, meta in raw["models"].items():
+                    if not isinstance(meta, dict):
+                        raise OmanageIndexError(f"Model '{model_name}' metadata must be an object")
+                    for field in ("blobSha", "blobName"):
+                        if field in meta and not isinstance(meta[field], str):
+                            raise OmanageIndexError(
+                                f"Model '{model_name}' field '{field}' must be a string"
+                            )
+                    for field in ("frozen", "compressed"):
+                        if field in meta and not isinstance(meta[field], bool):
+                            raise OmanageIndexError(
+                                f"Model '{model_name}' field '{field}' must be a boolean"
+                            )
+                
+                self._index = raw
             except json.JSONDecodeError as e:
                 raise OmanageIndexError(f"Invalid JSON in index file: {e}") from e
         
@@ -107,6 +130,9 @@ class IndexManager:
         """
         if not self._loaded:
             self.load()
+        
+        # Validate model name to prevent injection of arbitrary keys
+        validate_model_name(model_name)
         
         # Validate blob_sha format
         validate_blob_sha(blob_sha)

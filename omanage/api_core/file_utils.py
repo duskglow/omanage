@@ -27,6 +27,10 @@ def atomic_copy_with_lock(src: Path, dst: Path) -> None:
     src = src.resolve()
     dst = dst.resolve()
     
+    # Prevent TOCTOU: reject symlinks before any file operations
+    if src.is_symlink():
+        raise FileOperationError(f"Symlinks are not allowed: {src}")
+    
     # Validate destination is within expected directory
     dst.parent.mkdir(parents=True, exist_ok=True)
     
@@ -217,6 +221,10 @@ def transfer_manifest_file(
         # Fall back to copy+delete if rename fails (cross-filesystem)
         pass
     
+    # Prevent TOCTOU: reject symlinks before any file operations
+    if source.is_symlink():
+        raise FileOperationError(f"Symlinks are not allowed: {source}")
+
     # Copy with temp file for atomicity using secure tempfile
     fd, temp_path_str = tempfile.mkstemp(suffix='.tmp', dir=str(dest.parent))
     temp_path = Path(temp_path_str)

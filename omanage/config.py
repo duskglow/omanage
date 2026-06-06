@@ -129,15 +129,24 @@ class ConfigManager:
         if not self._loaded:
             self.load()
         
-        # Write config with pretty formatting
-        with open(self.config_file, 'w') as f:
-            json.dump(self._config, f, indent=2)
-        
-        # Enforce restrictive permissions (owner read/write only)
+        # Write config atomically with restrictive permissions from creation
+        # to prevent a window where the file is world-readable
         try:
-            os.chmod(self.config_file, 0o600)
+            fd = os.open(
+                self.config_file,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                0o600
+            )
+            with os.fdopen(fd, 'w') as f:
+                json.dump(self._config, f, indent=2)
         except OSError:
-            pass
+            # Fallback for platforms where os.open with mode may behave differently
+            with open(self.config_file, 'w') as f:
+                json.dump(self._config, f, indent=2)
+            try:
+                os.chmod(self.config_file, 0o600)
+            except OSError:
+                pass
     
     def exists(self) -> bool:
         """Check if config file exists."""

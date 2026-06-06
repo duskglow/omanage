@@ -28,7 +28,7 @@ __all__ = [
 
 
 # Constants for magic values
-SUPPORTED_MODEL_NAME_CHARS = r'^[a-zA-Z0-9_\-:/]+$'
+SUPPORTED_MODEL_NAME_CHARS = r'^[a-zA-Z0-9_\-:]+$'
 MAX_MODEL_NAME_LENGTH = 256
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file operations
 PROGRESS_UPDATE_INTERVAL = 0.1  # seconds between progress updates
@@ -274,12 +274,9 @@ def move_with_progress(src: Path, dst: Path, title: str = "Moving") -> None:
         try:
             src.unlink()
         except OSError as e:
-            # If we can't delete the source, try to clean up the destination
-            # to avoid leaving a duplicate/inconsistent state
-            try:
-                dst.unlink()
-            except OSError:
-                pass
+            # Do NOT delete the destination — the copy succeeded and it's the only
+            # remaining copy if source deletion failed. The inconsistency is
+            # recoverable (user can manually delete source later).
             raise OSError(f"Failed to remove source file after copy: {e}")
 
 
@@ -305,7 +302,7 @@ def validate_model_name(model_name: str) -> None:
     if not re.match(SUPPORTED_MODEL_NAME_CHARS, model_name):
         raise InvalidModelNameError(
             f"Invalid model name: '{model_name}'. "
-            f"Model names can only contain letters, numbers, underscores, hyphens, colons, and slashes."
+            f"Model names can only contain letters, numbers, underscores, hyphens, and colons."
         )
 
 
