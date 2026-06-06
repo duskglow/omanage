@@ -27,6 +27,20 @@ class _FileLock:
         self.lock_path = lock_path
         self.timeout = timeout
         self._lock_fd: Optional[int] = None
+        self._acquired = False  # Track if we successfully acquired the lock
+
+    STALE_LOCK_TIMEOUT = 300.0  # 5 minutes
+
+    def _is_stale_lock(self) -> bool:
+        """Check if the existing lock file is stale (from a crashed process)."""
+        try:
+            if not self.lock_path.exists():
+                return False
+            mtime = self.lock_path.stat().st_mtime
+            age = time.time() - mtime
+            return age > self.STALE_LOCK_TIMEOUT
+        except OSError:
+            return False
 
     def acquire(self) -> bool:
         """Acquire the lock with timeout.
@@ -37,11 +51,24 @@ class _FileLock:
         start_time = time.time()
 
         while time.time() - start_time < self.timeout:
+            # Check for stale lock and clean up if needed
+            if self._is_stale_lock():
+                try:
+                    self.lock_path.unlink()
+                except OSError:
+                    pass
+
             try:
                 # Use atomic file creation with O_EXCL to prevent TOCTOU race
                 # This fails immediately if the lock file already exists
                 fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
                 self._lock_fd = fd
+
+                # Write our PID to the lock file for ownership tracking
+                try:
+                    os.write(fd, str(os.getpid()).encode())
+                except OSError:
+                    pass
 
                 # Apply platform-specific locking on the file descriptor
                 if HAS_FCNTL:
@@ -62,6 +89,7 @@ class _FileLock:
                         time.sleep(0.1)
                         continue
 
+                self._acquired = True
                 return True
 
             except FileExistsError:
@@ -77,6 +105,10 @@ class _FileLock:
 
     def release(self) -> None:
         """Release the lock and clean up the lock file."""
+        if not self._acquired:
+            # We never successfully acquired the lock - don't touch the lock file
+            return
+
         if self._lock_fd is not None:
             try:
                 if HAS_FCNTL:
@@ -96,13 +128,18 @@ class _FileLock:
                     pass
                 self._lock_fd = None
 
-        # Clean up lock file
+        # Only delete lock file if it contains our PID (prevents deleting another process's lock)
         if self.lock_path.exists():
             try:
-                self.lock_path.unlink()
+                with open(self.lock_path, 'r') as f:
+                    content = f.read().strip()
+                if content == str(os.getpid()):
+                    self.lock_path.unlink()
             except OSError:
                 # Lock file may be held by another process or already removed
                 pass
+
+        self._acquired = False
 
     def __enter__(self) -> '_FileLock':
         if not self.acquire():

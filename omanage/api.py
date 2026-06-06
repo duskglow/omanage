@@ -1,8 +1,8 @@
 """Python API for omanage - Programmatic access to Ollama model management."""
 
 import os
+import re
 import shutil
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
@@ -28,7 +28,6 @@ from .utils import (
     PathTraversalError,
     InvalidModelNameError,
     CHUNK_SIZE,
-    PROGRESS_UPDATE_INTERVAL,
 )
 from .api_core.errors import (
     OmanageAPIError,
@@ -43,7 +42,7 @@ from .api_core.locking import _FileLock
 from .api_core.file_utils import (
     atomic_copy_with_temp,
     create_secure_tempfile,
-    safe_manifest_transfer,
+    transfer_manifest_file,
 )
 
 # Constants for magic values
@@ -181,6 +180,11 @@ class OmanageAPI:
         if not model_meta:
             raise ModelNotFoundError(f"Model '{model_name}' not found in index. Run initialize() first.")
         
+        # Validate blob name from index to prevent path traversal from tampered index
+        blob_name = model_meta.get('blobName', '')
+        if not blob_name or not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+            raise FileOperationError(f"Invalid blob name in index for model '{model_name}': {blob_name}")
+        
         if model_meta.get('frozen', False):
             raise ModelAlreadyFrozenError(f"Model '{model_name}' is already frozen")
         
@@ -214,15 +218,8 @@ class OmanageAPI:
         
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
-        lock = _FileLock(dest_lock_path)
         
-        try:
-            if not lock.acquire():
-                raise FileOperationError(
-                    "Could not acquire file lock - another operation may be in progress. "
-                    f"Try again in a few seconds."
-                )
-            
+        with _FileLock(dest_lock_path) as lock:
             # Re-check after acquiring lock
             if dest_path.exists():
                 raise FileOperationError(f"Destination already exists: {dest_path}")
@@ -253,9 +250,9 @@ class OmanageAPI:
                 )
                 
                 if base_manifest_path.exists():
-                    # Use safe_manifest_transfer for atomic transfer with rollback handling
+                    # Use transfer_manifest_file for atomic transfer with rollback handling
                     try:
-                        safe_manifest_transfer(base_manifest_path, remote_manifest_path, delete_source=True)
+                        transfer_manifest_file(base_manifest_path, remote_manifest_path, delete_source=True)
                     except FileOperationError as e:
                         raise FileOperationError(f"Failed to transfer manifest file: {e}")
                 
@@ -276,16 +273,13 @@ class OmanageAPI:
                     'compressed': compress
                 }
                 
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 if dest_path.exists():
                     try:
                         dest_path.unlink()
-                    except:
+                    except OSError:
                         pass
                 raise FileOperationError(f"Error freezing model: {e}")
-                
-        finally:
-            lock.release()
     
     def thaw_model(self, model_name: str) -> Dict[str, Any]:
         """
@@ -313,6 +307,11 @@ class OmanageAPI:
         model_meta = self.index.get_model(model_name)
         if not model_meta:
             raise ModelNotFoundError(f"Model '{model_name}' not found in index. Run initialize() first.")
+        
+        # Validate blob name from index to prevent path traversal from tampered index
+        blob_name = model_meta.get('blobName', '')
+        if not blob_name or not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+            raise FileOperationError(f"Invalid blob name in index for model '{model_name}': {blob_name}")
         
         if not model_meta.get('frozen', False):
             raise ModelAlreadyThawedError(f"Model '{model_name}' is already thawed")
@@ -347,15 +346,8 @@ class OmanageAPI:
         
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
-        lock = _FileLock(dest_lock_path)
         
-        try:
-            if not lock.acquire():
-                raise FileOperationError(
-                    "Could not acquire file lock - another operation may be in progress. "
-                    f"Try again in a few seconds."
-                )
-            
+        with _FileLock(dest_lock_path) as lock:
             # Re-check after acquiring lock
             if dest_path.exists():
                 raise FileOperationError(f"Destination already exists: {dest_path}")
@@ -387,9 +379,9 @@ class OmanageAPI:
                 )
                 
                 if remote_manifest_path.exists():
-                    # Use safe_manifest_transfer for atomic transfer with rollback handling
+                    # Use transfer_manifest_file for atomic transfer with rollback handling
                     try:
-                        safe_manifest_transfer(remote_manifest_path, base_manifest_path, delete_source=True)
+                        transfer_manifest_file(remote_manifest_path, base_manifest_path, delete_source=True)
                     except FileOperationError as e:
                         raise FileOperationError(f"Failed to transfer manifest file: {e}")
                 
@@ -410,16 +402,13 @@ class OmanageAPI:
                     'decompressed': is_compressed
                 }
                 
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 if dest_path.exists():
                     try:
                         dest_path.unlink()
-                    except:
+                    except OSError:
                         pass
                 raise FileOperationError(f"Error thawing model: {e}")
-                
-        finally:
-            lock.release()
     
     def verify(self) -> Dict[str, Any]:
         """
@@ -546,15 +535,19 @@ class OmanageAPI:
     
     def _get_ollama_models(self) -> List[Dict[str, str]]:
         """Get list of installed Ollama models using secure subprocess wrapper."""
+        # Use configured binary path if available
+        ollama_binary = self.config.get("ollamaBinary")
         try:
-            return get_ollama_models_secure()
+            return get_ollama_models_secure(ollama_binary=ollama_binary)
         except SubprocessError:
             raise OllamaNotInstalledError("Ollama not found. Please install Ollama first.")
     
     def _get_model_blob_info(self, model_name: str) -> Optional[Dict[str, str]]:
         """Get blob information for a model from its modelfile using secure subprocess wrapper."""
+        # Use configured binary path if available
+        ollama_binary = self.config.get("ollamaBinary")
         try:
-            result = get_model_blob_info_secure(model_name)
+            result = get_model_blob_info_secure(model_name, ollama_binary=ollama_binary)
             if result is None:
                 return None
             return result

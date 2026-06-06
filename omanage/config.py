@@ -10,6 +10,10 @@ from typing import Any, Dict, Optional
 from .utils import ValidationError, PathTraversalError
 
 
+# Maximum file size for config JSON (1MB - configs should be small)
+_MAX_CONFIG_SIZE = 1024 * 1024
+
+
 class ConfigManager:
     """Manages the .omanage.conf configuration file."""
     
@@ -48,6 +52,13 @@ class ConfigManager:
             self._config = self.DEFAULT_CONFIG.copy()
         else:
             try:
+                # Check file size to prevent memory exhaustion from malicious files
+                file_size = self.config_file.stat().st_size
+                if file_size > _MAX_CONFIG_SIZE:
+                    raise ConfigError(
+                        f"Config file too large: {file_size} bytes (max {_MAX_CONFIG_SIZE})"
+                    )
+                
                 with open(self.config_file, 'r') as f:
                     self._config = json.load(f)
                 # Merge with defaults for any missing keys
@@ -91,23 +102,27 @@ class ConfigManager:
                 path = Path(value)
                 if not path.exists():
                     raise ConfigError(f"Storage path does not exist: {value}")
+                if not path.is_dir():
+                    raise ConfigError(f"Storage path must be a directory: {value}")
                 # Normalize to absolute path
                 self._config[key] = str(path.resolve())
             else:
                 self._config[key] = ""
         
         # Validate ollama binary
-        if key == "ollamaBinary":
+        elif key == "ollamaBinary":
             if value:
                 # Try to find the binary in PATH
                 binary_path = shutil.which(value)
                 if not binary_path:
                     raise ConfigError(f"Ollama binary not found in PATH: {value}")
-                self._config[key] = value
+                # Store the resolved path for security
+                self._config[key] = binary_path
             else:
-                self._config[key] = "ollama"
+                self._config[key] = shutil.which("ollama") or "ollama"
         
-        self._config[key] = value
+        else:
+            self._config[key] = value
     
     def save(self) -> None:
         """Save configuration to file."""
@@ -138,9 +153,4 @@ class ConfigManager:
 
 class ConfigError(Exception):
     """Configuration-related errors."""
-    pass
-
-
-class ValidationError(OSError):
-    """Validation error for invalid configuration values."""
     pass

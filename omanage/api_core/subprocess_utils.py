@@ -6,12 +6,21 @@ from typing import List, Optional, Any
 from ..utils import validate_model_name, InvalidModelNameError
 
 
+# Default timeout for subprocess calls (seconds)
+DEFAULT_TIMEOUT = 300
+
+
 class SubprocessError(Exception):
     """Custom exception for subprocess execution errors."""
     pass
 
 
-def run_ollama_command(cmd: List[str], model_name: Optional[str] = None) -> subprocess.CompletedProcess:
+def run_ollama_command(
+    cmd: List[str],
+    model_name: Optional[str] = None,
+    timeout: Optional[int] = None,
+    ollama_binary: Optional[str] = None
+) -> subprocess.CompletedProcess:
     """
     Run an Ollama command with proper input validation.
     
@@ -22,6 +31,10 @@ def run_ollama_command(cmd: List[str], model_name: Optional[str] = None) -> subp
         cmd: The Ollama command to execute as a list of arguments.
         model_name: Optional model name to validate before execution.
                    If provided, validates the model name before running the command.
+        timeout: Timeout in seconds for the subprocess call. Defaults to
+                DEFAULT_TIMEOUT (300 seconds).
+        ollama_binary: Optional path to the Ollama binary. If provided, replaces
+                      the first element of cmd with this binary path.
     
     Returns:
         subprocess.CompletedProcess with the command result.
@@ -49,6 +62,10 @@ def run_ollama_command(cmd: List[str], model_name: Optional[str] = None) -> subp
         if len(model_name) > 256:
             raise SubprocessError(f"Model name too long (max 256 characters): {model_name}")
     
+    # Apply custom binary if specified
+    if ollama_binary and cmd:
+        cmd = [ollama_binary] + cmd[1:]
+    
     # Validate command arguments are safe strings
     for arg in cmd:
         if not isinstance(arg, str):
@@ -62,7 +79,8 @@ def run_ollama_command(cmd: List[str], model_name: Optional[str] = None) -> subp
             cmd,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            timeout=timeout or DEFAULT_TIMEOUT
         )
         return result
     except subprocess.CalledProcessError as e:
@@ -75,14 +93,21 @@ def run_ollama_command(cmd: List[str], model_name: Optional[str] = None) -> subp
         raise SubprocessError(
             "Ollama not found. Please install Ollama first and ensure it's in your PATH."
         )
+    except subprocess.TimeoutExpired:
+        raise SubprocessError(
+            f"Ollama command timed out after {timeout or DEFAULT_TIMEOUT} seconds: {' '.join(cmd)}"
+        )
 
 
-def get_ollama_models() -> List[dict]:
+def get_ollama_models(ollama_binary: Optional[str] = None) -> List[dict]:
     """
     Get list of installed Ollama models securely.
     
     This is a centralized function that uses the secure subprocess wrapper
     to get the list of installed models.
+    
+    Args:
+        ollama_binary: Optional path to the Ollama binary to use.
     
     Returns:
         List of dictionaries with 'name' key for each installed model.
@@ -90,7 +115,7 @@ def get_ollama_models() -> List[dict]:
     Raises:
         SubprocessError: If the Ollama command fails.
     """
-    result = run_ollama_command(["ollama", "list"])
+    result = run_ollama_command(["ollama", "list"], ollama_binary=ollama_binary)
     
     lines = result.stdout.strip().split('\n')
     models = []
@@ -111,7 +136,7 @@ def get_ollama_models() -> List[dict]:
     return models
 
 
-def get_model_blob_info(model_name: str) -> Optional[dict]:
+def get_model_blob_info(model_name: str, ollama_binary: Optional[str] = None) -> Optional[dict]:
     """
     Get blob information for a model from its modelfile securely.
     
@@ -120,12 +145,15 @@ def get_model_blob_info(model_name: str) -> Optional[dict]:
     
     Args:
         model_name: Name of the model to query.
+        ollama_binary: Optional path to the Ollama binary to use.
     
     Returns:
-        Dictionary with 'blobSha' and 'blobName' keys, or None if not found.
+        Dictionary with 'blobSha' and 'blobName' keys, or None if modelfile
+        does not contain a FROM line.
     
     Raises:
-        SubprocessError: If the Ollama command fails.
+        SubprocessError: If the Ollama command fails or Ollama is not installed.
+        InvalidModelNameError: If model name is invalid.
     """
     # Validate model name first
     try:
@@ -133,21 +161,19 @@ def get_model_blob_info(model_name: str) -> Optional[dict]:
     except InvalidModelNameError as e:
         raise SubprocessError(f"Cannot get blob info: {e}")
     
-    try:
-        result = run_ollama_command(
-            ["ollama", "show", "--modelfile", model_name],
-            model_name=model_name
-        )
-        
-        for line in result.stdout.split('\n'):
-            if line.startswith("FROM "):
-                from_path = line[5:].strip()
-                blob_name = from_path.rsplit('/', 1)[-1] if '/' in from_path else from_path
-                return {
-                    "blobSha": blob_name,  # Ollama uses SHA256 digest as blob identifier/filename
-                    "blobName": blob_name  # Full blob filename (same as SHA in Ollama's convention)
-                }
-        
-        return None
-    except SubprocessError:
-        return None
+    result = run_ollama_command(
+        ["ollama", "show", "--modelfile", model_name],
+        model_name=model_name,
+        ollama_binary=ollama_binary
+    )
+    
+    for line in result.stdout.split('\n'):
+        if line.startswith("FROM "):
+            from_path = line[5:].strip()
+            blob_name = from_path.rsplit('/', 1)[-1] if '/' in from_path else from_path
+            return {
+                "blobSha": blob_name,  # Ollama uses SHA256 digest as blob identifier/filename
+                "blobName": blob_name  # Full blob filename (same as SHA in Ollama's convention)
+            }
+    
+    return None

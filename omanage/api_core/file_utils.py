@@ -143,7 +143,7 @@ def atomic_copy_with_temp(src: Path, dst: Path) -> None:
         try:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-        except:
+        except OSError:
             pass
         raise FileOperationError(f"Atomic copy with temp failed: {e}")
 
@@ -171,35 +171,27 @@ def create_secure_tempfile(
         FileOperationError: If temp file creation fails.
     """
     try:
-        if directory:
-            fd = os.open(str(directory), os.O_RDONLY)
-            try:
-                fd2, path = tempfile.mkstemp(suffix=suffix, prefix=prefix, dir=str(directory))
-                try:
-                    os.fchmod(fd2, 0o600)  # Owner read/write only
-                    return Path(path)
-                finally:
-                    os.close(fd2)
-            finally:
-                os.close(fd)
-        else:
-            fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
-            try:
-                os.fchmod(fd, 0o600)  # Owner read/write only
-                return Path(path)
-            finally:
-                os.close(fd)
+        dir_arg = str(directory) if directory else None
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix, dir=dir_arg)
+        try:
+            os.fchmod(fd, 0o600)  # Owner read/write only
+        except OSError:
+            os.close(fd)
+            os.unlink(path)
+            raise
+        os.close(fd)
+        return Path(path)
     except OSError as e:
         raise FileOperationError(f"Failed to create secure temp file: {e}")
 
 
-def safe_manifest_transfer(
+def transfer_manifest_file(
     source: Path,
     dest: Path,
     delete_source: bool = True
 ) -> bool:
     """
-    Safely transfer a manifest file with transactional guarantees.
+    Transfer a manifest file with transactional guarantees.
     
     This function attempts to move the manifest file atomically, falling back to
     copy+delete if needed (cross-filesystem), with proper cleanup on failure.
@@ -210,24 +202,26 @@ def safe_manifest_transfer(
         delete_source: If True, delete the source file after successful transfer
         
     Returns:
-        True if transfer was successful, False otherwise
+        True if transfer was successful, False if source doesn't exist
     """
-    if not source.exists():
-        return False
-    
     dest.parent.mkdir(parents=True, exist_ok=True)
     
     try:
         # Try to move first (atomic on same filesystem)
         source.rename(dest)
         return True
+    except FileNotFoundError:
+        # Source doesn't exist
+        return False
     except OSError:
         # Fall back to copy+delete if rename fails (cross-filesystem)
         pass
     
-    # Copy with temp file for atomicity
-    temp_path = dest.with_suffix(dest.suffix + '.tmp')
+    # Copy with temp file for atomicity using secure tempfile
+    fd, temp_path_str = tempfile.mkstemp(suffix='.tmp', dir=str(dest.parent))
+    temp_path = Path(temp_path_str)
     try:
+        os.close(fd)
         with source.open('rb') as src_file:
             with open(temp_path, 'wb') as dst_file:
                 while True:
@@ -238,7 +232,7 @@ def safe_manifest_transfer(
         
         # Verify copy integrity
         src_size = source.stat().st_size
-        temp_size = Path(temp_path).stat().st_size
+        temp_size = temp_path.stat().st_size
         if src_size != temp_size:
             raise FileOperationError(
                 f"Manifest transfer failed: size mismatch (src={src_size}, temp={temp_size})"
@@ -251,12 +245,12 @@ def safe_manifest_transfer(
             source.unlink()
         return True
         
-    except Exception as e:
+    except OSError as e:
         # Clean up temp file on failure
         try:
             if temp_path.exists():
                 temp_path.unlink()
-        except:
+        except OSError:
             pass
         raise FileOperationError(f"Manifest transfer failed: {e}")
 
@@ -270,7 +264,7 @@ def safe_delete(path: Path, missing_ok: bool = True) -> bool:
         missing_ok: If True, don't raise an error if the file doesn't exist
         
     Returns:
-        True if file was deleted or didn't exist, False otherwise
+        True if file was deleted or didn't exist (when missing_ok=True), False otherwise
         
     Raises:
         FileOperationError: If deletion fails and missing_ok is False
@@ -279,7 +273,7 @@ def safe_delete(path: Path, missing_ok: bool = True) -> bool:
         if path.exists():
             path.unlink()
             return True
-        return missing_ok
+        return bool(missing_ok)
     except OSError as e:
         if missing_ok:
             return False

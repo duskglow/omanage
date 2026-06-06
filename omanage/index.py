@@ -1,6 +1,7 @@
 """Index file handling for omanage."""
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +11,18 @@ from .config import ConfigManager
 class OmanageIndexError(Exception):
     """Index-related errors."""
     pass
+
+
+# SHA256 regex pattern for blob validation
+_SHA256_PATTERN = re.compile(r'^[a-fA-F0-9]{64}$')
+# Maximum file size for index JSON (10MB)
+_MAX_INDEX_SIZE = 10 * 1024 * 1024
+
+
+def validate_blob_sha(blob_sha: str) -> None:
+    """Validate that a blob SHA has the correct format."""
+    if not blob_sha or not _SHA256_PATTERN.match(blob_sha):
+        raise OmanageIndexError(f"Invalid blob SHA format: {blob_sha}")
 
 
 class IndexManager:
@@ -40,6 +53,13 @@ class IndexManager:
             self._index = {"models": {}}
         else:
             try:
+                # Check file size to prevent memory exhaustion from malicious files
+                file_size = self.index_file.stat().st_size
+                if file_size > _MAX_INDEX_SIZE:
+                    raise OmanageIndexError(
+                        f"Index file too large: {file_size} bytes (max {_MAX_INDEX_SIZE})"
+                    )
+                
                 with open(self.index_file, 'r') as f:
                     self._index = json.load(f)
                     # Ensure models key exists
@@ -73,6 +93,9 @@ class IndexManager:
         """
         if not self._loaded:
             self.load()
+        
+        # Validate blob_sha format
+        validate_blob_sha(blob_sha)
         
         self._index["models"][model_name] = {
             "blobSha": blob_sha,
@@ -129,45 +152,3 @@ class IndexManager:
             self.load()
         return self._index
     
-    def get_manifest_path(self, model_meta: dict, frozen: bool, config: ConfigManager) -> Path:
-        """
-        Get the expected path for a model's manifest file.
-        
-        Args:
-            model_meta: Model metadata from index
-            frozen: Whether the model is frozen
-            config: ConfigManager instance
-            
-        Returns:
-            Path to the manifest file
-        """
-        from .utils import validate_model_name, InvalidModelNameError, sanitize_for_path_component
-        
-        config.load()
-        
-        manifest_name = model_meta.get('manifestName')
-        if not manifest_name:
-            raise OmanageIndexError("manifestName not found in model metadata")
-        
-        # Validate manifest name to prevent path traversal from corrupted index
-        try:
-            validate_model_name(manifest_name)
-        except InvalidModelNameError:
-            # Fall back to sanitization if the name doesn't pass strict validation
-            manifest_name = sanitize_for_path_component(manifest_name)
-        
-        if frozen:
-            # Manifest should be in remote storage
-            remote_storage = config.get('remoteStorage')
-            if not remote_storage:
-                raise OmanageIndexError("remoteStorage not configured")
-            return Path(remote_storage) / manifest_name
-        else:
-            # Manifest should be in base storage
-            base_storage = config.get('baseStorage')
-            if not base_storage:
-                raise OmanageIndexError("baseStorage not configured")
-            return Path(base_storage) / manifest_name
-
-
-# Keep the class definition but with new name (removed duplicate)

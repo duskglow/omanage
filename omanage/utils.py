@@ -28,6 +28,7 @@ __all__ = [
 
 # Constants for magic values
 SUPPORTED_MODEL_NAME_CHARS = r'^[a-zA-Z0-9_\-:/]+$'
+MAX_MODEL_NAME_LENGTH = 256
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file operations
 PROGRESS_UPDATE_INTERVAL = 0.1  # seconds between progress updates
 
@@ -131,7 +132,13 @@ class ProgressBar:
         speed_str = self._format_size(speed) + '/s'
         
         # Display (overwrites previous line)
-        if sys.stdout.isatty():
+        # Safely check TTY status, handling closed file descriptors
+        try:
+            is_tty = sys.stdout.isatty() if not sys.stdout.closed else False
+        except (ValueError, OSError):
+            is_tty = False
+        
+        if is_tty:
             print(f'\r{self.title}: |{bar}| {percent:6.1f}% {current_str}/{total_str} {speed_str}', end='', flush=True)
         else:
             # Non-TTY: print periodically
@@ -180,20 +187,26 @@ def decompress_file(source_path: Path, dest_path: Path, progress_bar: Optional[P
         source_path: Path to compressed source file
         dest_path: Path to decompressed output
         progress_bar: Optional progress bar to update
+        
+    Raises:
+        ValidationError: If the file is not a valid gzip archive.
     """
-    with gzip.open(source_path, 'rb') as f_in:
-        with open(dest_path, 'wb') as f_out:
-            if progress_bar:
-                # Read and decompress in chunks
-                while True:
-                    chunk = f_in.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    progress_bar.update(len(chunk))
-            else:
-                # Simple copy without progress
-                shutil.copyfileobj(f_in, f_out)
+    try:
+        with gzip.open(source_path, 'rb') as f_in:
+            with open(dest_path, 'wb') as f_out:
+                if progress_bar:
+                    # Read and decompress in chunks
+                    while True:
+                        chunk = f_in.read(CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        f_out.write(chunk)
+                        progress_bar.update(len(chunk))
+                else:
+                    # Simple copy without progress
+                    shutil.copyfileobj(f_in, f_out)
+    except (gzip.BadGzipFile, OSError, zlib.error if 'zlib' in globals() else OSError) as e:
+        raise ValidationError(f"Failed to decompress {source_path}: not a valid gzip file") from e
 
 
 def validate_file_not_empty(source_path: Path) -> None:
@@ -215,17 +228,22 @@ def detect_compression(source_path: Path) -> bool:
     """
     Detect if a file is gzip compressed by checking magic bytes.
     
+    Performs a more thorough check by validating the full gzip header
+    (magic bytes + compression method) to reduce false positives.
+    
     Args:
         source_path: Path to file to check
         
     Returns:
-        True if file appears to be gzip compressed
+        True if file appears to be a valid gzip compressed file
     """
     try:
         with open(source_path, 'rb') as f:
-            magic_bytes = f.read(2)
-            # Gzip magic bytes: 0x1f 0x8b
-            return magic_bytes == b'\x1f\x8b'
+            header = f.read(3)
+            if len(header) < 3:
+                return False
+            # Gzip magic bytes: 0x1f 0x8b, compression method: 0x08 (deflate)
+            return header[0:2] == b'\x1f\x8b' and header[2] == 0x08
     except (IOError, OSError):
         return False
 
@@ -234,26 +252,34 @@ def move_with_progress(src: Path, dst: Path, title: str = "Moving") -> None:
     """
     Move a file with progress bar.
     
+    Uses atomic copy utilities to ensure data integrity and proper
+    cleanup on failure.
+    
     Args:
         src: Source file path
         dst: Destination file path
         title: Title for progress bar
     """
+    from .api_core.file_utils import atomic_copy_with_temp
+    
     total_size = src.stat().st_size
     
     with ProgressBar(total_size, title) as pb:
-        # Copy with progress
-        with open(src, 'rb') as f_in:
-            with open(dst, 'wb') as f_out:
-                while True:
-                    chunk = f_in.read(CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    pb.update(len(chunk))
+        # Use atomic copy for data integrity
+        atomic_copy_with_temp(src, dst)
+        pb.update(total_size)
         
         # Remove source after successful copy
-        src.unlink()
+        try:
+            src.unlink()
+        except OSError as e:
+            # If we can't delete the source, try to clean up the destination
+            # to avoid leaving a duplicate/inconsistent state
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+            raise OSError(f"Failed to remove source file after copy: {e}")
 
 
 def validate_model_name(model_name: str) -> None:
@@ -270,6 +296,11 @@ def validate_model_name(model_name: str) -> None:
     if not model_name:
         raise InvalidModelNameError("Model name cannot be empty")
     
+    if len(model_name) > MAX_MODEL_NAME_LENGTH:
+        raise InvalidModelNameError(
+            f"Model name too long ({len(model_name)} characters, max {MAX_MODEL_NAME_LENGTH})"
+        )
+    
     if not re.match(SUPPORTED_MODEL_NAME_CHARS, model_name):
         raise InvalidModelNameError(
             f"Invalid model name: '{model_name}'. "
@@ -280,6 +311,10 @@ def validate_model_name(model_name: str) -> None:
 def validate_path_traversal(path: Path, base_path: Path, description: str = "path") -> Path:
     """
     Validate that a path does not traverse outside its expected base directory.
+    
+    Uses absolute() instead of resolve() to avoid following symlinks during validation,
+    preventing TOCTOU race conditions where a symlink target is changed between
+    validation and file operations.
     
     Args:
         path: The path to validate
@@ -293,12 +328,19 @@ def validate_path_traversal(path: Path, base_path: Path, description: str = "pat
         PathTraversalError: If the path attempts to traverse outside base_path
     """
     try:
-        # Resolve to absolute paths
-        resolved_path = path.resolve()
-        resolved_base = base_path.resolve()
+        # Use absolute() instead of resolve() to avoid following symlinks
+        # This prevents TOCTOU attacks where a symlink is changed between check and use
+        resolved_path = path.absolute()
+        resolved_base = base_path.absolute()
         
-        # Check if path is within base_path
-        if not str(resolved_path).startswith(str(resolved_base)):
+        # Normalize paths for comparison
+        resolved_path = Path(os.path.normpath(resolved_path))
+        resolved_base = Path(os.path.normpath(resolved_base))
+        
+        # Check if path is within base_path using proper path containment check
+        try:
+            resolved_path.relative_to(resolved_base)
+        except ValueError:
             raise PathTraversalError(
                 f"Path traversal attempt detected for {description}: "
                 f"'{path}' resolves to '{resolved_path}', which is outside '{resolved_base}'"
@@ -306,7 +348,7 @@ def validate_path_traversal(path: Path, base_path: Path, description: str = "pat
         
         return resolved_path
     except (OSError, RuntimeError) as e:
-        # Handle cases where resolve() might fail
+        # Handle cases where absolute() might fail
         raise PathTraversalError(
             f"Could not validate {description} path '{path}': {e}"
         )
@@ -329,6 +371,9 @@ def parse_model_name(model_name: str) -> Tuple[str, str]:
         raise InvalidModelNameError("Model name cannot be empty")
     
     if ':' in model_name:
+        # Reject multiple colons to prevent ambiguous parsing
+        if model_name.count(':') > 1:
+            raise InvalidModelNameError("Model name can contain at most one colon")
         model_parts = model_name.split(':', 1)
         model = model_parts[0]
         tag = model_parts[1]
