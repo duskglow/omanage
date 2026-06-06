@@ -1,6 +1,7 @@
 """Index file handling for omanage."""
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -23,6 +24,19 @@ def validate_blob_sha(blob_sha: str) -> None:
     """Validate that a blob SHA has the correct format."""
     if not blob_sha or not _SHA256_PATTERN.match(blob_sha):
         raise OmanageIndexError(f"Invalid blob SHA format: {blob_sha}")
+
+
+# Regex for safe blob names (prevents path traversal via blobName)
+_BLOB_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_\-\.]+$')
+
+
+def validate_blob_name(blob_name: str) -> None:
+    """Validate that a blob name contains only safe characters."""
+    if not blob_name or not _BLOB_NAME_PATTERN.match(blob_name):
+        raise OmanageIndexError(
+            f"Invalid blob name format: '{blob_name}'. "
+            f"Blob names can only contain letters, numbers, underscores, hyphens, and dots."
+        )
 
 
 class IndexManager:
@@ -97,6 +111,9 @@ class IndexManager:
         # Validate blob_sha format
         validate_blob_sha(blob_sha)
         
+        # Validate blob_name format for defense-in-depth
+        validate_blob_name(blob_name)
+        
         self._index["models"][model_name] = {
             "blobSha": blob_sha,
             "blobName": blob_name,
@@ -134,6 +151,12 @@ class IndexManager:
         # Write index with pretty formatting
         with open(self.index_file, 'w') as f:
             json.dump(self._index, f, indent=2)
+        
+        # Enforce restrictive permissions (owner read/write only)
+        try:
+            os.chmod(self.index_file, 0o600)
+        except OSError:
+            pass
     
     def exists(self) -> bool:
         """Check if index file exists."""
@@ -151,4 +174,3 @@ class IndexManager:
         if not self._loaded:
             self.load()
         return self._index
-    

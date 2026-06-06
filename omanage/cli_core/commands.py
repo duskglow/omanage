@@ -12,7 +12,7 @@ from ..utils import (
     InvalidModelNameError,
     ValidationError,
 )
-from ..api import OmanageAPI, OmanageAPIError, ModelNotFoundError, StorageNotConfiguredError, FileOperationError
+from ..api import OmanageAPI, OmanageAPIError, ModelNotFoundError, StorageNotConfiguredError, FileOperationError, ModelAlreadyFrozenError, ModelAlreadyThawedError
 from ..api_core.subprocess_utils import (
     get_ollama_models as api_get_ollama_models,
     get_model_blob_info as api_get_model_blob_info,
@@ -181,25 +181,28 @@ def cmd_init(args: argparse.Namespace) -> int:
     
     print(f"Processing {len(models)} model(s)...")
     
-    for model in models:
-        model_name = model['name']
-        print(f"  Processing {model_name}...")
-        
-        # Get blob info
-        blob_info = get_model_blob_info(model_name)
-        if blob_info:
-            index.set_model(
-                model_name=model_name,
-                blob_sha=blob_info['blobSha'],
-                blob_name=blob_info['blobName'],
-                frozen=False,
-                compressed=False
-            )
-            print(f"    Added blob: {blob_info['blobSha']}")
-        else:
-            print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
+    try:
+        for model in models:
+            model_name = model['name']
+            print(f"  Processing {model_name}...")
+            
+            # Get blob info
+            blob_info = get_model_blob_info(model_name)
+            if blob_info:
+                index.set_model(
+                    model_name=model_name,
+                    blob_sha=blob_info['blobSha'],
+                    blob_name=blob_info['blobName'],
+                    frozen=False,
+                    compressed=False
+                )
+                print(f"    Added blob: {blob_info['blobSha']}")
+            else:
+                print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\nOperation cancelled. Saving partial progress...", file=sys.stderr)
     
-    # Save index
+    # Save index (always, even on partial progress)
     index.save()
     print(f"\nInitialized {len(models)} model(s) in index.")
     
@@ -241,32 +244,35 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     
     print(f"Refreshing {len(models)} model(s)...")
     
-    for model in models:
-        model_name = model['name']
-        print(f"  Refreshing {model_name}...")
-        
-        # Get current metadata if exists
-        current_meta = index.get_model(model_name)
-        
-        # Get blob info
-        blob_info = get_model_blob_info(model_name)
-        if blob_info:
-            # Preserve frozen/compressed status if model already in index
-            frozen = current_meta.get('frozen', False) if current_meta else False
-            compressed = current_meta.get('compressed', False) if current_meta else False
+    try:
+        for model in models:
+            model_name = model['name']
+            print(f"  Refreshing {model_name}...")
             
-            index.set_model(
-                model_name=model_name,
-                blob_sha=blob_info['blobSha'],
-                blob_name=blob_info['blobName'],
-                frozen=frozen,
-                compressed=compressed
-            )
-            print(f"    Updated blob: {blob_info['blobSha']}")
-        else:
-            print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
+            # Get current metadata if exists
+            current_meta = index.get_model(model_name)
+            
+            # Get blob info
+            blob_info = get_model_blob_info(model_name)
+            if blob_info:
+                # Preserve frozen/compressed status if model already in index
+                frozen = current_meta.get('frozen', False) if current_meta else False
+                compressed = current_meta.get('compressed', False) if current_meta else False
+                
+                index.set_model(
+                    model_name=model_name,
+                    blob_sha=blob_info['blobSha'],
+                    blob_name=blob_info['blobName'],
+                    frozen=frozen,
+                    compressed=compressed
+                )
+                print(f"    Updated blob: {blob_info['blobSha']}")
+            else:
+                print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\nOperation cancelled. Saving partial progress...", file=sys.stderr)
     
-    # Save index
+    # Save index (always, even on partial progress)
     index.save()
     print(f"\nRefreshed {len(models)} model(s).")
     
@@ -292,10 +298,17 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     try:
         result = api.freeze_model(model_name, compress)
         
-        print(f"\nModel '{model_name}' frozen successfully.")
-        return 0
+        if result['success']:
+            print(f"\nModel '{model_name}' frozen successfully.")
+            return 0
+        else:
+            print(f"Model '{model_name}' freeze failed: {result.get('message', 'Unknown error')}")
+            return 1
             
     except ModelNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ModelAlreadyFrozenError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except StorageNotConfiguredError as e:
@@ -335,6 +348,9 @@ def cmd_thaw(args: argparse.Namespace) -> int:
             return 1
             
     except ModelNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ModelAlreadyThawedError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except StorageNotConfiguredError as e:

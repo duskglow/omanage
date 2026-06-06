@@ -132,6 +132,12 @@ class ConfigManager:
         # Write config with pretty formatting
         with open(self.config_file, 'w') as f:
             json.dump(self._config, f, indent=2)
+        
+        # Enforce restrictive permissions (owner read/write only)
+        try:
+            os.chmod(self.config_file, 0o600)
+        except OSError:
+            pass
     
     def exists(self) -> bool:
         """Check if config file exists."""

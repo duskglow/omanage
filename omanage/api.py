@@ -219,6 +219,10 @@ class OmanageAPI:
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
         
+        # Check for symlinks before file operations
+        if source_path.is_symlink():
+            raise FileOperationError(f"Symlinks are not allowed in storage: {source_path}")
+        
         with _FileLock(dest_lock_path) as lock:
             # Re-check after acquiring lock
             if dest_path.exists():
@@ -241,8 +245,6 @@ class OmanageAPI:
                 if not dest_path.exists():
                     raise FileOperationError("Destination file not created")
                 
-                source_path.unlink()
-                
                 # Handle manifest file if it exists
                 model, tag = parse_model_name(model_name)
                 base_manifest_path, remote_manifest_path = self._get_manifest_paths(
@@ -251,10 +253,9 @@ class OmanageAPI:
                 
                 if base_manifest_path.exists():
                     # Use transfer_manifest_file for atomic transfer with rollback handling
-                    try:
-                        transfer_manifest_file(base_manifest_path, remote_manifest_path, delete_source=True)
-                    except FileOperationError as e:
-                        raise FileOperationError(f"Failed to transfer manifest file: {e}")
+                    result = transfer_manifest_file(base_manifest_path, remote_manifest_path, delete_source=True)
+                    if not result:
+                        raise FileOperationError(f"Failed to transfer manifest file from {base_manifest_path} to {remote_manifest_path}")
                 
                 self.index.set_model(
                     model_name=model_name,
@@ -266,6 +267,9 @@ class OmanageAPI:
                 )
                 self.index.save()
                 
+                # ONLY delete source after all metadata is safely persisted
+                source_path.unlink()
+                
                 return {
                     'success': True,
                     'model': model_name,
@@ -274,6 +278,7 @@ class OmanageAPI:
                 }
                 
             except (OSError, ValueError) as e:
+                # Rollback: remove destination but leave source intact
                 if dest_path.exists():
                     try:
                         dest_path.unlink()
@@ -347,6 +352,10 @@ class OmanageAPI:
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
         
+        # Check for symlinks before file operations
+        if source_path.is_symlink():
+            raise FileOperationError(f"Symlinks are not allowed in storage: {source_path}")
+        
         with _FileLock(dest_lock_path) as lock:
             # Re-check after acquiring lock
             if dest_path.exists():
@@ -370,8 +379,6 @@ class OmanageAPI:
                 if not dest_path.exists():
                     raise FileOperationError("Destination file not created")
                 
-                source_path.unlink()
-                
                 # Handle manifest file if it exists
                 model, tag = parse_model_name(model_name)
                 base_manifest_path, remote_manifest_path = self._get_manifest_paths(
@@ -380,10 +387,9 @@ class OmanageAPI:
                 
                 if remote_manifest_path.exists():
                     # Use transfer_manifest_file for atomic transfer with rollback handling
-                    try:
-                        transfer_manifest_file(remote_manifest_path, base_manifest_path, delete_source=True)
-                    except FileOperationError as e:
-                        raise FileOperationError(f"Failed to transfer manifest file: {e}")
+                    result = transfer_manifest_file(remote_manifest_path, base_manifest_path, delete_source=True)
+                    if not result:
+                        raise FileOperationError(f"Failed to transfer manifest file from {remote_manifest_path} to {base_manifest_path}")
                 
                 self.index.set_model(
                     model_name=model_name,
@@ -395,6 +401,9 @@ class OmanageAPI:
                 )
                 self.index.save()
                 
+                # ONLY delete source after all metadata is safely persisted
+                source_path.unlink()
+                
                 return {
                     'success': True,
                     'model': model_name,
@@ -403,6 +412,7 @@ class OmanageAPI:
                 }
                 
             except (OSError, ValueError) as e:
+                # Rollback: remove destination but leave source intact
                 if dest_path.exists():
                     try:
                         dest_path.unlink()
@@ -456,6 +466,14 @@ class OmanageAPI:
             blob_name = metadata.get('blobName')
             frozen = metadata.get('frozen', False)
             compressed = metadata.get('compressed', False)
+            
+            if not blob_name:
+                missing.append({
+                    'model': model_name,
+                    'path': 'N/A',
+                    'issue': 'Missing blobName in index'
+                })
+                continue
             
             if frozen:
                 expected_path = remote_path / blob_name

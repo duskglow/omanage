@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import time
+import zlib
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -205,7 +206,7 @@ def decompress_file(source_path: Path, dest_path: Path, progress_bar: Optional[P
                 else:
                     # Simple copy without progress
                     shutil.copyfileobj(f_in, f_out)
-    except (gzip.BadGzipFile, OSError, zlib.error if 'zlib' in globals() else OSError) as e:
+    except (gzip.BadGzipFile, OSError, zlib.error) as e:
         raise ValidationError(f"Failed to decompress {source_path}: not a valid gzip file") from e
 
 
