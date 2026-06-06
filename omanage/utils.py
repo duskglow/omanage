@@ -2,12 +2,12 @@
 
 import gzip
 import os
+import re
 import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-
+from typing import Optional, Tuple
 
 __all__ = [
     'ProgressBar',
@@ -18,7 +18,18 @@ __all__ = [
     'detect_compression',
     'validate_file_not_empty',
     'move_with_progress',
+    'validate_model_name',
+    'validate_path_traversal',
+    'SUPPORTED_MODEL_NAME_CHARS',
+    'CHUNK_SIZE',
+    'PROGRESS_UPDATE_INTERVAL',
 ]
+
+
+# Constants for magic values
+SUPPORTED_MODEL_NAME_CHARS = r'^[a-zA-Z0-9_\-:/]+$'
+CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file operations
+PROGRESS_UPDATE_INTERVAL = 0.1  # seconds between progress updates
 
 
 class OmanageError(Exception):
@@ -28,6 +39,16 @@ class OmanageError(Exception):
 
 class ValidationError(OmanageError):
     """Validation error for invalid file operations."""
+    pass
+
+
+class PathTraversalError(ValidationError):
+    """Path traversal attempt detected."""
+    pass
+
+
+class InvalidModelNameError(ValidationError):
+    """Invalid model name provided."""
     pass
 
 
@@ -85,7 +106,7 @@ class ProgressBar:
     def _update(self, current: int) -> None:
         """Update the display (internal)."""
         # Limit update frequency
-        if time.time() - self.last_update < 0.1:
+        if time.time() - self.last_update < PROGRESS_UPDATE_INTERVAL:
             return
         self.last_update = time.time()
         
@@ -141,9 +162,8 @@ def compress_file(source_path: Path, dest_path: Path, progress_bar: Optional[Pro
         with gzip.open(dest_path, 'wb') as f_out:
             if progress_bar:
                 # Read and compress in chunks for progress tracking
-                chunk_size = 1024 * 1024  # 1MB chunks
                 while True:
-                    chunk = f_in.read(chunk_size)
+                    chunk = f_in.read(CHUNK_SIZE)
                     if not chunk:
                         break
                     f_out.write(chunk)
@@ -168,9 +188,8 @@ def decompress_file(source_path: Path, dest_path: Path, progress_bar: Optional[P
         with open(dest_path, 'wb') as f_out:
             if progress_bar:
                 # Read and decompress in chunks
-                chunk_size = 1024 * 1024  # 1MB chunks
                 while True:
-                    chunk = f_in.read(chunk_size)
+                    chunk = f_in.read(CHUNK_SIZE)
                     if not chunk:
                         break
                     f_out.write(chunk)
@@ -229,9 +248,8 @@ def move_with_progress(src: Path, dst: Path, title: str = "Moving") -> None:
         # Copy with progress
         with open(src, 'rb') as f_in:
             with open(dst, 'wb') as f_out:
-                chunk_size = 1024 * 1024  # 1MB chunks
                 while True:
-                    chunk = f_in.read(chunk_size)
+                    chunk = f_in.read(CHUNK_SIZE)
                     if not chunk:
                         break
                     f_out.write(chunk)
@@ -239,3 +257,107 @@ def move_with_progress(src: Path, dst: Path, title: str = "Moving") -> None:
         
         # Remove source after successful copy
         src.unlink()
+
+
+def validate_model_name(model_name: str) -> None:
+    """
+    Validate a model name contains only safe characters.
+    
+    Args:
+        model_name: Model name to validate
+        
+    Raises:
+        InvalidModelNameError: If model name contains invalid characters
+        ValueError: If model name is empty or None
+    """
+    if not model_name:
+        raise InvalidModelNameError("Model name cannot be empty")
+    
+    if not re.match(SUPPORTED_MODEL_NAME_CHARS, model_name):
+        raise InvalidModelNameError(
+            f"Invalid model name: '{model_name}'. "
+            f"Model names can only contain letters, numbers, underscores, hyphens, colons, and slashes."
+        )
+
+
+def validate_path_traversal(path: Path, base_path: Path, description: str = "path") -> Path:
+    """
+    Validate that a path does not traverse outside its expected base directory.
+    
+    Args:
+        path: The path to validate
+        base_path: The base directory the path should be within
+        description: Description of what is being validated (for error messages)
+        
+    Returns:
+        The validated path if valid
+        
+    Raises:
+        PathTraversalError: If the path attempts to traverse outside base_path
+    """
+    try:
+        # Resolve to absolute paths
+        resolved_path = path.resolve()
+        resolved_base = base_path.resolve()
+        
+        # Check if path is within base_path
+        if not str(resolved_path).startswith(str(resolved_base)):
+            raise PathTraversalError(
+                f"Path traversal attempt detected for {description}: "
+                f"'{path}' resolves to '{resolved_path}', which is outside '{resolved_base}'"
+            )
+        
+        return resolved_path
+    except (OSError, RuntimeError) as e:
+        # Handle cases where resolve() might fail
+        raise PathTraversalError(
+            f"Could not validate {description} path '{path}': {e}"
+        )
+
+
+def parse_model_name(model_name: str) -> Tuple[str, str]:
+    """
+    Parse a model name into its components (model, tag).
+    
+    Args:
+        model_name: Model name in format "name:tag" or "name"
+        
+    Returns:
+        Tuple of (model, tag) where tag defaults to 'latest' if not specified
+        
+    Raises:
+        InvalidModelNameError: If model_name is empty or invalid
+    """
+    validate_model_name(model_name)
+    
+    if ':' in model_name:
+        model_parts = model_name.split(':', 1)
+        model = model_parts[0]
+        tag = model_parts[1]
+    else:
+        model = model_name
+        tag = 'latest'
+    
+    # Validate model and tag components separately
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', model):
+        raise InvalidModelNameError(f"Invalid model component: '{model}'")
+    
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', tag):
+        raise InvalidModelNameError(f"Invalid tag component: '{tag}'")
+    
+    return model, tag
+
+
+def sanitize_for_path_component(value: str) -> str:
+    """
+    Sanitize a string for use in a file path component.
+    
+    Args:
+        value: String to sanitize
+        
+    Returns:
+        Sanitized string safe for use in file paths
+    """
+    # Replace any characters that aren't safe for filenames
+    safe_value = re.sub(r'[^a-zA-Z0-9_\-]', '_', value)
+    return safe_value

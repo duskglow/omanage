@@ -3,7 +3,13 @@
 __version__ = "0.1.0"
 __author__ = "Russell Miller"
 
-from .utils import OmanageError, ValidationError, ProgressBar
+from .utils import (
+    OmanageError,
+    ValidationError,
+    PathTraversalError,
+    InvalidModelNameError,
+    ProgressBar,
+)
 from .index import OmanageIndexError
 from .config import ConfigError
 from .api import (
@@ -12,7 +18,9 @@ from .api import (
     OllamaNotInstalledError,
     ModelNotFoundError,
     StorageNotConfiguredError,
-    FileOperationError
+    FileOperationError,
+    ModelAlreadyFrozenError,
+    ModelAlreadyThawedError,
 )
 
 __all__ = [
@@ -20,6 +28,8 @@ __all__ = [
     '__author__',
     'OmanageError',
     'ValidationError',
+    'PathTraversalError',
+    'InvalidModelNameError',
     'ProgressBar',
     'OmanageIndexError',
     'ConfigError',
@@ -29,4 +39,6 @@ __all__ = [
     'ModelNotFoundError',
     'StorageNotConfiguredError',
     'FileOperationError',
+    'ModelAlreadyFrozenError',
+    'ModelAlreadyThawedError',
 ]

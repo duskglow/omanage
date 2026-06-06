@@ -2,9 +2,12 @@
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from .utils import ValidationError, PathTraversalError
 
 
 class ConfigManager:
@@ -18,6 +21,9 @@ class ConfigManager:
         "baseStorage": "",
         "remoteStorage": ""
     }
+    
+    # Valid configuration keys
+    VALID_KEYS = {"ollamaBinary", "baseStorage", "remoteStorage"}
     
     def __init__(self, config_dir: Optional[Path] = None):
         """
@@ -61,9 +67,46 @@ class ConfigManager:
         return self._config.get(key, default)
     
     def set(self, key: str, value: Any) -> None:
-        """Set a configuration value."""
+        """
+        Set a configuration value with validation.
+        
+        Args:
+            key: Configuration key to set
+            value: Value to set
+            
+        Raises:
+            ConfigError: If key is invalid or value is invalid
+            ValidationError: If path validation fails
+        """
         if not self._loaded:
             self.load()
+        
+        # Validate key
+        if key not in self.VALID_KEYS:
+            raise ConfigError(f"Invalid configuration key: '{key}'. Valid keys are: {', '.join(sorted(self.VALID_KEYS))}")
+        
+        # Validate and normalize path values
+        if key in ("baseStorage", "remoteStorage"):
+            if value:
+                path = Path(value)
+                if not path.exists():
+                    raise ConfigError(f"Storage path does not exist: {value}")
+                # Normalize to absolute path
+                self._config[key] = str(path.resolve())
+            else:
+                self._config[key] = ""
+        
+        # Validate ollama binary
+        if key == "ollamaBinary":
+            if value:
+                # Try to find the binary in PATH
+                binary_path = shutil.which(value)
+                if not binary_path:
+                    raise ConfigError(f"Ollama binary not found in PATH: {value}")
+                self._config[key] = value
+            else:
+                self._config[key] = "ollama"
+        
         self._config[key] = value
     
     def save(self) -> None:
@@ -95,4 +138,9 @@ class ConfigManager:
 
 class ConfigError(Exception):
     """Configuration-related errors."""
+    pass
+
+
+class ValidationError(OSError):
+    """Validation error for invalid configuration values."""
     pass
