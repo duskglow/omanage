@@ -1,6 +1,6 @@
 # omanage - Ollama Model Manager
 
-A CLI tool to manage Ollama model storage by moving blob files between filesystems.
+A CLI tool and Python API to manage Ollama model storage by moving blob files between filesystems.
 
 ## Overview
 
@@ -17,6 +17,7 @@ A CLI tool to manage Ollama model storage by moving blob files between filesyste
 - **Freeze/Thaw**: Move model blobs between storage locations
 - **Compression**: Optional gzip compression when freezing models
 - **Verification**: Verify model files exist in expected locations
+- **Python API**: Use as a Python module in your own applications
 
 ## Installation
 
@@ -29,10 +30,12 @@ Or run directly:
 python -m omanage [command]
 ```
 
-## Commands
+## Usage as a CLI Tool
+
+### Commands
 
 | Command | Description |
-|---------|-------------|
+|-----|----|
 | `config` | Show or set configuration options |
 | `help` | Show help message |
 | `list` | List all models with their status |
@@ -41,6 +44,148 @@ python -m omanage [command]
 | `freeze <model>` | Move a model's blob to remote storage |
 | `thaw <model>` | Move a model's blob back to base storage |
 | `verify` | Verify model file locations match index |
+
+### Usage Examples
+
+#### Initialize model index
+```bash
+omanage init
+```
+
+#### List all models
+```bash
+omanage list
+```
+
+#### Freeze a model
+```bash
+omanage freeze llama3:8b
+```
+
+#### Thaw a model
+```bash
+omanage thaw llama3:8b
+```
+
+#### Set configuration
+```bash
+omanage config --set baseStorage=/mnt/storage/ollama
+```
+
+## Usage as a Python API
+
+### Basic Usage
+
+```python
+from pathlib import Path
+from omanage import OmanageAPI, OllamaNotInstalledError, StorageNotConfiguredError
+
+# Initialize the API
+api = OmanageAPI(Path.cwd())
+
+try:
+    # Initialize model index
+    models = api.initialize()
+    print(f"Initialized {len(models)} models")
+    
+    # List all models
+    models = api.list_models()
+    for name, meta in models.items():
+        print(f"{name}: frozen={meta['frozen']}, compressed={meta['compressed']}")
+    
+    # Freeze a model with compression
+    result = api.freeze_model("llama3:8b", compress=True)
+    print(f"Froze model: {result}")
+    
+    # Thaw a model
+    result = api.thaw_model("llama3:8b")
+    print(f"Thawed model: {result}")
+    
+    # Verify files
+    verification = api.verify()
+    print(f"Status: {verification['status']}")
+    
+except OllamaNotInstalledError as e:
+    print(f"Error: {e}")
+except StorageNotConfiguredError as e:
+    print(f"Error: {e}")
+except Exception as e:
+    print(f"Error: {e}")
+```
+
+### Exception Types
+
+| Exception | Description |
+|-----------|-------------|
+| `OmanageAPIError` | Base exception for all API errors |
+| `OllamaNotInstalledError` | Ollama CLI is not installed or not in PATH |
+| `ModelNotFoundError` | Model not found in index |
+| `StorageNotConfiguredError` | Storage paths not configured |
+| `FileOperationError` | File operation failed |
+
+### API Reference
+
+#### `OmanageAPI(project_dir: Path = None)`
+
+Create a new API instance.
+
+**Parameters:**
+- `project_dir` - Path to the project directory containing `.omanage.conf`. If None, uses current working directory.
+
+#### `initialize(model_name: Optional[str] = None) -> List[Dict[str, Any]]`
+
+Initialize the model index from Ollama.
+
+**Parameters:**
+- `model_name` - If specified, only initialize this model. Otherwise, initialize all models.
+
+**Returns:** List of dictionaries with 'name' key for each initialized model.
+
+#### `list_models() -> Dict[str, Dict[str, Any]]`
+
+Get all models in the index.
+
+**Returns:** Dictionary mapping model names to their metadata.
+
+#### `get_model(model_name: str) -> Optional[Dict[str, Any]]`
+
+Get metadata for a specific model.
+
+**Parameters:**
+- `model_name` - Name of the model to retrieve.
+
+**Returns:** Model metadata dictionary, or None if not found.
+
+#### `freeze_model(model_name: str, compress: bool = False) -> Dict[str, Any]`
+
+Freeze a model by moving its blob to remote storage.
+
+**Parameters:**
+- `model_name` - Name of the model to freeze.
+- `compress` - If True, compress the blob during the move.
+
+**Returns:** Dictionary with 'success', 'model', 'blob_sha', 'compressed' keys.
+
+#### `thaw_model(model_name: str) -> Dict[str, Any]`
+
+Thaw a model by moving its blob back to base storage.
+
+**Parameters:**
+- `model_name` - Name of the model to thaw.
+
+**Returns:** Dictionary with 'success', 'model', 'blob_sha', 'decompressed' keys.
+
+#### `verify() -> Dict[str, Any]`
+
+Verify model files exist in expected locations.
+
+**Returns:** Dictionary with 'status', 'total_models', 'missing', 'mismatched' keys.
+
+#### `get_installed_models() -> List[Dict[str, str]]`
+
+Get list of models installed in Ollama.
+
+**Returns:** List of dictionaries with 'name' key for each installed model.
 
 ## Configuration
 
@@ -71,40 +216,13 @@ Model metadata is stored in `.omanage.index.json`:
 }
 ```
 
-## Usage Examples
-
-### Initialize model index
-```bash
-omanage init
-```
-
-### List all models
-```bash
-omanage list
-```
-
-### Freeze a model
-```bash
-omanage freeze llama3:8b
-```
-
-### Thaw a model
-```bash
-omanage thaw llama3:8b
-```
-
-### Set configuration
-```bash
-omanage config --set baseStorage=/mnt/storage/ollama
-```
-
 ## License
 
 MIT
 
 ## Note
 
-This application was coded with assistance from Cline and Qwen3-coder-next:q8_0.
+This application was coded with assistance from Cline, kimi-k2.5, and Qwen3-coder-next:q8_0.
 
 This application has no affiliation whatsoever with Ollama.  The name "Ollama" is owned by its owner.  It is only used here as a descriptor for what it does, and no other affiliation or use of the mark is claimed.
 
