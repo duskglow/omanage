@@ -17,7 +17,6 @@ __all__ = [
     'compress_file',
     'decompress_file',
     'detect_compression',
-    'validate_file_not_empty',
     'move_with_progress',
     'validate_model_name',
     'validate_path_traversal',
@@ -96,8 +95,13 @@ class ProgressBar:
         Update progress with additional bytes.
         
         Args:
-            size: Number of bytes transferred since last update
+            size: Number of bytes transferred since last update. Must be non-negative.
+        
+        Raises:
+            ValueError: If size is negative.
         """
+        if size < 0:
+            raise ValueError(f"Progress update size must be non-negative, got {size}")
         self.bytes_transferred += size
         self._update(self.bytes_transferred)
     
@@ -208,21 +212,6 @@ def decompress_file(source_path: Path, dest_path: Path, progress_bar: Optional[P
                     shutil.copyfileobj(f_in, f_out)
     except (gzip.BadGzipFile, OSError, zlib.error) as e:
         raise ValidationError(f"Failed to decompress {source_path}: not a valid gzip file") from e
-
-
-def validate_file_not_empty(source_path: Path) -> None:
-    """
-    Validate that a file is not empty (zero-length).
-    
-    Args:
-        source_path: Path to the file to validate
-        
-    Raises:
-        ValidationError: If the file is empty (zero-length)
-    """
-    file_size = source_path.stat().st_size
-    if file_size == 0:
-        raise ValidationError(f"Cannot process zero-length file: {source_path}")
 
 
 def detect_compression(source_path: Path) -> bool:
@@ -389,16 +378,5 @@ def parse_model_name(model_name: str) -> Tuple[str, str]:
     return model, tag
 
 
-def sanitize_for_path_component(value: str) -> str:
-    """
-    Sanitize a string for use in a file path component.
-    
-    Args:
-        value: String to sanitize
-        
-    Returns:
-        Sanitized string safe for use in file paths
-    """
-    # Replace any characters that aren't safe for filenames
-    safe_value = re.sub(r'[^a-zA-Z0-9_\-]', '_', value)
-    return safe_value
+
+

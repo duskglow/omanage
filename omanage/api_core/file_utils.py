@@ -106,10 +106,14 @@ def atomic_copy_with_temp(src: Path, dst: Path) -> None:
         dst: Destination file path
         
     Raises:
-        FileOperationError: If the copy operation fails.
+        FileOperationError: If the copy operation fails or source is a symlink.
     """
     src = src.resolve()
     dst = dst.resolve()
+    
+    # Prevent TOCTOU: reject symlinks before any file operations
+    if src.is_symlink():
+        raise FileOperationError(f"Symlinks are not allowed: {src}")
     
     # Ensure destination directory exists
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -207,7 +211,15 @@ def transfer_manifest_file(
         
     Returns:
         True if transfer was successful, False if source doesn't exist
+        
+    Raises:
+        FileOperationError: If the source is a symlink.
     """
+    # Prevent TOCTOU: reject symlinks before ANY file operations
+    # Must check before rename, since rename on a symlink just moves the symlink
+    if source.is_symlink():
+        raise FileOperationError(f"Symlinks are not allowed: {source}")
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     
     try:
@@ -220,10 +232,6 @@ def transfer_manifest_file(
     except OSError:
         # Fall back to copy+delete if rename fails (cross-filesystem)
         pass
-    
-    # Prevent TOCTOU: reject symlinks before any file operations
-    if source.is_symlink():
-        raise FileOperationError(f"Symlinks are not allowed: {source}")
 
     # Copy with temp file for atomicity using secure tempfile
     fd, temp_path_str = tempfile.mkstemp(suffix='.tmp', dir=str(dest.parent))
@@ -263,26 +271,3 @@ def transfer_manifest_file(
         raise FileOperationError(f"Manifest transfer failed: {e}")
 
 
-def safe_delete(path: Path, missing_ok: bool = True) -> bool:
-    """
-    Safely delete a file with error handling.
-    
-    Args:
-        path: Path to the file to delete
-        missing_ok: If True, don't raise an error if the file doesn't exist
-        
-    Returns:
-        True if file was deleted or didn't exist (when missing_ok=True), False otherwise
-        
-    Raises:
-        FileOperationError: If deletion fails and missing_ok is False
-    """
-    try:
-        if path.exists():
-            path.unlink()
-            return True
-        return bool(missing_ok)
-    except OSError as e:
-        if missing_ok:
-            return False
-        raise FileOperationError(f"Failed to delete file: {e}")

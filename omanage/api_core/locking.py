@@ -128,15 +128,15 @@ class _FileLock:
                     pass
                 self._lock_fd = None
 
-        # Only delete lock file if it contains our PID (prevents deleting another process's lock)
-        if self.lock_path.exists():
+        # Only delete lock file if we successfully acquired it.
+        # Rely on _acquired flag rather than re-reading PID from file to avoid
+        # a race condition where another process acquires and overwrites the PID
+        # between our read and unlink operations.
+        if self._acquired and self.lock_path.exists():
             try:
-                with open(self.lock_path, 'r') as f:
-                    content = f.read().strip()
-                if content == str(os.getpid()):
-                    self.lock_path.unlink()
+                self.lock_path.unlink()
             except OSError:
-                # Lock file may be held by another process or already removed
+                # Lock file may already be removed by another process
                 pass
 
         self._acquired = False

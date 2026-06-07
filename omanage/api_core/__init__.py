@@ -17,5 +17,4 @@ __all__ = [
     'atomic_copy_with_temp',
     'create_secure_tempfile',
     'transfer_manifest_file',
-    'safe_delete',
 ]
