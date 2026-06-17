@@ -94,7 +94,7 @@ def atomic_move_with_lock(src: Path, dst: Path) -> None:
             raise FileOperationError(f"Atomic move failed: {e}")
 
 
-def atomic_copy_with_temp(src: Path, dst: Path) -> None:
+def atomic_copy_with_temp(src: Path, dst: Path, progress_callback=None) -> None:
     """
     Copy a file using a temporary file for atomicity.
     
@@ -104,6 +104,8 @@ def atomic_copy_with_temp(src: Path, dst: Path) -> None:
     Args:
         src: Source file path
         dst: Destination file path
+        progress_callback: Optional callable accepting an int (bytes copied this chunk)
+                          which is called after each chunk is written.
         
     Raises:
         FileOperationError: If the copy operation fails or source is a symlink.
@@ -134,6 +136,8 @@ def atomic_copy_with_temp(src: Path, dst: Path) -> None:
                     if not chunk:
                         break
                     dst_file.write(chunk)
+                    if progress_callback:
+                        progress_callback(len(chunk))
         
         # Verify copy integrity
         src_size = src.stat().st_size

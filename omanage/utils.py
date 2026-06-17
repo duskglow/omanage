@@ -257,9 +257,8 @@ def move_with_progress(src: Path, dst: Path, title: str = "Moving") -> None:
     total_size = src.stat().st_size
     
     with ProgressBar(total_size, title) as pb:
-        # Use atomic copy for data integrity
-        atomic_copy_with_temp(src, dst)
-        pb.update(total_size)
+        # Use atomic copy for data integrity, reporting progress per chunk
+        atomic_copy_with_temp(src, dst, progress_callback=pb.update)
         
         # Remove source after successful copy
         try:
