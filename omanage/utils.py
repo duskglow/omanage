@@ -27,7 +27,9 @@ __all__ = [
 
 
 # Constants for magic values
-SUPPORTED_MODEL_NAME_CHARS = r'^[a-zA-Z0-9_\-:]+$'
+# Ollama model names may contain letters, numbers, underscores, hyphens,
+# dots (e.g., mistral-medium-3.5), and a single colon separating the tag.
+SUPPORTED_MODEL_NAME_CHARS = r'^[a-zA-Z0-9_\-.:]+$'
 MAX_MODEL_NAME_LENGTH = 256
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for file operations
 PROGRESS_UPDATE_INTERVAL = 0.1  # seconds between progress updates
@@ -291,7 +293,7 @@ def validate_model_name(model_name: str) -> None:
     if not re.match(SUPPORTED_MODEL_NAME_CHARS, model_name):
         raise InvalidModelNameError(
             f"Invalid model name: '{model_name}'. "
-            f"Model names can only contain letters, numbers, underscores, hyphens, and colons."
+            f"Model names can only contain letters, numbers, underscores, hyphens, dots, and colons."
         )
 
 
@@ -369,10 +371,10 @@ def parse_model_name(model_name: str) -> Tuple[str, str]:
         tag = 'latest'
     
     # Validate model and tag components separately
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', model):
+    if not re.match(r'^[a-zA-Z0-9_\-.]+$', model):
         raise InvalidModelNameError(f"Invalid model component: '{model}'")
     
-    if not re.match(r'^[a-zA-Z0-9_\-]+$', tag):
+    if not re.match(r'^[a-zA-Z0-9_\-.]+$', tag):
         raise InvalidModelNameError(f"Invalid tag component: '{tag}'")
     
     return model, tag
