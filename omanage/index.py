@@ -16,7 +16,9 @@ class OmanageIndexError(Exception):
 
 
 # SHA256 regex pattern for blob validation
-_SHA256_PATTERN = re.compile(r'^[a-fA-F0-9]{64}$')
+# Ollama may report blob identifiers as either a bare 64-char hex digest or
+# with a "sha256-" prefix (e.g., sha256-1b2b95e2...).
+_SHA256_PATTERN = re.compile(r'^(?:sha256-)?[a-fA-F0-9]{64}$', re.IGNORECASE)
 # Maximum file size for index JSON (10MB)
 _MAX_INDEX_SIZE = 10 * 1024 * 1024
 

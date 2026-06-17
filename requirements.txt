@@ -1,33 +1,3 @@
-# omanage - Ollama Model Manager
-
-## Requirements
-- Python 3.8+
-- Ollama CLI installed and in PATH
-
-## Installation
-
-```bash
-pip install -e .
-```
-
-Or run directly:
-```bash
-python -m omanage [command]
-```
-
-## Usage
-
-```bash
-omanage help              # Show help
-omanage config            # Show configuration
-omanage config --set key=value  # Set configuration
-omanage list              # List all models
-omanage init              # Initialize model index
-omanage refresh           # Refresh model index
-omanage freeze <model>    # Freeze a model
-omanage thaw <model>      # Thaw a model
-omanage verify            # Verify model locations
-```
-
-## License
-MIT
+# omanage runtime dependencies
+# This project uses only the Python standard library.
+# Ollama CLI must be installed separately and available in PATH.
