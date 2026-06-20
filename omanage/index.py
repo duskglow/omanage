@@ -77,7 +77,7 @@ class IndexManager:
                         f"Index file too large: {file_size} bytes (max {_MAX_INDEX_SIZE})"
                     )
                 
-                with open(self.index_file, 'r') as f:
+                with open(self.index_file, 'r', encoding='utf-8') as f:
                     raw = json.load(f)
                 
                 # Schema validation: ensure correct structure and types
@@ -177,7 +177,7 @@ class IndexManager:
             self.load()
         
         # Write index with pretty formatting
-        with open(self.index_file, 'w') as f:
+        with open(self.index_file, 'w', encoding='utf-8') as f:
             json.dump(self._index, f, indent=2)
         
         # Enforce restrictive permissions (owner read/write only)

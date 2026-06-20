@@ -421,6 +421,285 @@ class OmanageAPI:
                         pass
                 raise FileOperationError(f"Error thawing model: {e}")
     
+    def export_model(self, model_name: str, compress: bool = False) -> Dict[str, Any]:
+        """
+        Export a model by copying its blob to remote storage without deleting the source.
+
+        Behaves exactly like freeze_model() except the source blob and manifest are
+        left intact in base storage. This is useful for creating a copy on an NFS
+        partition that can later be imported elsewhere.
+
+        Args:
+            model_name: Name of the model to export.
+            compress: If True, compress the blob during the copy.
+
+        Returns:
+            Dictionary with operation results including:
+            - 'success': bool indicating success
+            - 'model': model name
+            - 'blob_sha': SHA of the copied blob
+            - 'compressed': whether compression was used
+
+        Raises:
+            ModelNotFoundError: If model not in index.
+            StorageNotConfiguredError: If storage paths not configured.
+            FileOperationError: If file operation fails.
+            InvalidModelNameError: If model name is invalid.
+        """
+        validate_model_name(model_name)
+        self.index.load()
+
+        model_meta = self.index.get_model(model_name)
+        if not model_meta:
+            raise ModelNotFoundError(f"Model '{model_name}' not found in index. Run initialize() first.")
+
+        # Validate blob name from index to prevent path traversal from tampered index
+        blob_name = model_meta.get('blobName', '')
+        if not blob_name or not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+            raise FileOperationError(f"Invalid blob name in index for model '{model_name}': {blob_name}")
+
+        if model_meta.get('frozen', False):
+            raise ModelAlreadyFrozenError(f"Model '{model_name}' is already frozen")
+
+        self.config.load()
+        base_storage = self.config.get('baseStorage')
+        remote_storage = self.config.get('remoteStorage')
+
+        if not base_storage:
+            raise StorageNotConfiguredError("baseStorage not configured")
+        if not remote_storage:
+            raise StorageNotConfiguredError("remoteStorage not configured")
+
+        # Validate storage paths exist
+        base_path = Path(base_storage)
+        remote_path = Path(remote_storage)
+
+        if not base_path.exists():
+            raise FileOperationError(f"Base storage path does not exist: {base_path}")
+        if not remote_path.exists():
+            raise FileOperationError(f"Remote storage path does not exist: {remote_path}")
+
+        source_path = Path(base_storage) / model_meta['blobName']
+        dest_path = Path(remote_storage) / model_meta['blobName']
+
+        # Validate paths don't traverse outside expected directories
+        validate_path_traversal(source_path, base_path, "source path")
+        validate_path_traversal(dest_path, remote_path, "destination path")
+
+        if not source_path.exists():
+            raise FileOperationError(f"Blob file not found: {source_path}")
+
+        # Use file locking to prevent race conditions (cross-platform)
+        dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
+
+        # Check for symlinks before file operations
+        if source_path.is_symlink():
+            raise FileOperationError(f"Symlinks are not allowed in storage: {source_path}")
+
+        with _FileLock(dest_lock_path) as lock:
+            # Re-check after acquiring lock
+            if dest_path.exists():
+                raise FileOperationError(f"Destination already exists: {dest_path}")
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+            file_size = source_path.stat().st_size
+
+            try:
+                if compress:
+                    with ProgressBar(file_size, "Compressing") as pb:
+                        compress_file(source_path, dest_path, pb)
+                else:
+                    with ProgressBar(file_size, "Copying") as pb:
+                        atomic_copy_with_temp(source_path, dest_path, progress_callback=pb.update)
+
+                if not dest_path.exists():
+                    raise FileOperationError("Destination file not created")
+
+                # Copy manifest file if it exists (do not move/delete source)
+                model, tag = parse_model_name(model_name)
+                base_manifest_path, remote_manifest_path = self._get_manifest_paths(
+                    model, tag, base_storage, remote_storage
+                )
+
+                if base_manifest_path.exists():
+                    result = transfer_manifest_file(
+                        base_manifest_path,
+                        remote_manifest_path,
+                        delete_source=False,
+                        copy_only=True
+                    )
+                    if not result:
+                        raise FileOperationError(f"Failed to copy manifest file from {base_manifest_path} to {remote_manifest_path}")
+
+                self.index.set_model(
+                    model_name=model_name,
+                    blob_sha=model_meta['blobSha'],
+                    blob_name=model_meta['blobName'],
+                    frozen=True,
+                    compressed=compress,
+                    manifest_name=tag
+                )
+                self.index.save()
+
+                # Do NOT delete source — export leaves the original in place
+
+                return {
+                    'success': True,
+                    'model': model_name,
+                    'blob_sha': model_meta['blobSha'],
+                    'compressed': compress
+                }
+
+            except (OSError, ValueError) as e:
+                # Rollback: remove destination but leave source intact
+                if dest_path.exists():
+                    try:
+                        dest_path.unlink()
+                    except OSError:
+                        pass
+                raise FileOperationError(f"Error exporting model: {e}")
+
+    def import_model(self, model_name: str) -> Dict[str, Any]:
+        """
+        Import a model by copying its blob from remote storage without deleting the source.
+
+        Behaves exactly like thaw_model() except the source blob and manifest in remote
+        storage are left intact. This is useful for pulling a model from an NFS partition
+        onto a new machine while keeping the shared copy available.
+
+        Args:
+            model_name: Name of the model to import.
+
+        Returns:
+            Dictionary with operation results including:
+            - 'success': bool indicating success
+            - 'model': model name
+            - 'blob_sha': SHA of the copied blob
+            - 'decompressed': whether decompression occurred
+
+        Raises:
+            ModelNotFoundError: If model not in index.
+            StorageNotConfiguredError: If storage paths not configured.
+            FileOperationError: If file operation fails.
+            InvalidModelNameError: If model name is invalid.
+        """
+        validate_model_name(model_name)
+        self.index.load()
+
+        model_meta = self.index.get_model(model_name)
+        if not model_meta:
+            raise ModelNotFoundError(f"Model '{model_name}' not found in index. Run initialize() first.")
+
+        # Validate blob name from index to prevent path traversal from tampered index
+        blob_name = model_meta.get('blobName', '')
+        if not blob_name or not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+            raise FileOperationError(f"Invalid blob name in index for model '{model_name}': {blob_name}")
+
+        if not model_meta.get('frozen', False):
+            raise ModelAlreadyThawedError(f"Model '{model_name}' is already thawed")
+
+        self.config.load()
+        base_storage = self.config.get('baseStorage')
+        remote_storage = self.config.get('remoteStorage')
+
+        if not base_storage:
+            raise StorageNotConfiguredError("baseStorage not configured")
+        if not remote_storage:
+            raise StorageNotConfiguredError("remoteStorage not configured")
+
+        # Validate storage paths exist
+        base_path = Path(base_storage)
+        remote_path = Path(remote_storage)
+
+        if not base_path.exists():
+            raise FileOperationError(f"Base storage path does not exist: {base_path}")
+        if not remote_path.exists():
+            raise FileOperationError(f"Remote storage path does not exist: {remote_path}")
+
+        source_path = Path(remote_storage) / model_meta['blobName']
+        dest_path = Path(base_storage) / model_meta['blobName']
+
+        # Validate paths don't traverse outside expected directories
+        validate_path_traversal(source_path, remote_path, "source path")
+        validate_path_traversal(dest_path, base_path, "destination path")
+
+        if not source_path.exists():
+            raise FileOperationError(f"Blob file not found: {source_path}")
+
+        # Use file locking to prevent race conditions (cross-platform)
+        dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
+
+        # Check for symlinks before file operations
+        if source_path.is_symlink():
+            raise FileOperationError(f"Symlinks are not allowed in storage: {source_path}")
+
+        with _FileLock(dest_lock_path) as lock:
+            # Re-check after acquiring lock
+            if dest_path.exists():
+                raise FileOperationError(f"Destination already exists: {dest_path}")
+
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+            file_size = source_path.stat().st_size
+            is_compressed = detect_compression(source_path) or model_meta.get('compressed', False)
+
+            try:
+                if is_compressed:
+                    with ProgressBar(file_size, "Decompressing") as pb:
+                        decompress_file(source_path, dest_path, pb)
+                else:
+                    with ProgressBar(file_size, "Copying") as pb:
+                        atomic_copy_with_temp(source_path, dest_path, progress_callback=pb.update)
+
+                if not dest_path.exists():
+                    raise FileOperationError("Destination file not created")
+
+                # Copy manifest file if it exists (do not move/delete source)
+                model, tag = parse_model_name(model_name)
+                base_manifest_path, remote_manifest_path = self._get_manifest_paths(
+                    model, tag, base_storage, remote_storage
+                )
+
+                if remote_manifest_path.exists():
+                    result = transfer_manifest_file(
+                        remote_manifest_path,
+                        base_manifest_path,
+                        delete_source=False,
+                        copy_only=True
+                    )
+                    if not result:
+                        raise FileOperationError(f"Failed to copy manifest file from {remote_manifest_path} to {base_manifest_path}")
+
+                # After successful import, the blob is always decompressed in base storage
+                self.index.set_model(
+                    model_name=model_name,
+                    blob_sha=model_meta['blobSha'],
+                    blob_name=model_meta['blobName'],
+                    frozen=False,
+                    compressed=False,
+                    manifest_name=tag
+                )
+                self.index.save()
+
+                # Do NOT delete source — import leaves the original in place
+
+                return {
+                    'success': True,
+                    'model': model_name,
+                    'blob_sha': model_meta['blobSha'],
+                    'decompressed': is_compressed
+                }
+
+            except (OSError, ValueError) as e:
+                # Rollback: remove destination but leave source intact
+                if dest_path.exists():
+                    try:
+                        dest_path.unlink()
+                    except OSError:
+                        pass
+                raise FileOperationError(f"Error importing model: {e}")
+
     def verify(self) -> Dict[str, Any]:
         """
         Verify model files exist in expected locations.

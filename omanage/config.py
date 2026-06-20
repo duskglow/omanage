@@ -59,7 +59,7 @@ class ConfigManager:
                         f"Config file too large: {file_size} bytes (max {_MAX_CONFIG_SIZE})"
                     )
                 
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     self._config = json.load(f)
                 # Merge with defaults for any missing keys
                 for key, value in self.DEFAULT_CONFIG.items():
@@ -141,7 +141,7 @@ class ConfigManager:
                 json.dump(self._config, f, indent=2)
         except OSError:
             # Fallback for platforms where os.open with mode may behave differently
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self._config, f, indent=2)
             try:
                 os.chmod(self.config_file, 0o600)

@@ -96,6 +96,33 @@ def create_parser() -> argparse.ArgumentParser:
     )
     thaw_parser.set_defaults(func=_get_command_handler('cmd_thaw'))
     
+    # export command
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Copy a model's blob to remote storage without deleting the source"
+    )
+    export_parser.add_argument(
+        "model_name",
+        help="Model to export"
+    )
+    export_parser.add_argument(
+        "--compress",
+        action="store_true",
+        help="Compress the blob during copy"
+    )
+    export_parser.set_defaults(func=_get_command_handler('cmd_export'))
+    
+    # import command
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Copy a model's blob from remote storage without deleting the source"
+    )
+    import_parser.add_argument(
+        "model_name",
+        help="Model to import"
+    )
+    import_parser.set_defaults(func=_get_command_handler('cmd_import'))
+    
     # verify command
     verify_parser = subparsers.add_parser(
         "verify",
@@ -108,7 +135,10 @@ def create_parser() -> argparse.ArgumentParser:
 
 def _get_command_handler(name: str):
     """Get command handler function by name."""
-    from .commands import cmd_config, cmd_help, cmd_list, cmd_init, cmd_refresh, cmd_freeze, cmd_thaw, cmd_verify
+    from .commands import (
+        cmd_config, cmd_help, cmd_list, cmd_init, cmd_refresh,
+        cmd_freeze, cmd_thaw, cmd_export, cmd_import, cmd_verify
+    )
     
     handlers = {
         'cmd_config': cmd_config,
@@ -118,6 +148,8 @@ def _get_command_handler(name: str):
         'cmd_refresh': cmd_refresh,
         'cmd_freeze': cmd_freeze,
         'cmd_thaw': cmd_thaw,
+        'cmd_export': cmd_export,
+        'cmd_import': cmd_import,
         'cmd_verify': cmd_verify,
     }
     return handlers[name]

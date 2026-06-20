@@ -200,7 +200,8 @@ def create_secure_tempfile(
 def transfer_manifest_file(
     source: Path,
     dest: Path,
-    delete_source: bool = True
+    delete_source: bool = True,
+    copy_only: bool = False
 ) -> bool:
     """
     Transfer a manifest file with transactional guarantees.
@@ -212,6 +213,7 @@ def transfer_manifest_file(
         source: Source manifest file path
         dest: Destination manifest file path
         delete_source: If True, delete the source file after successful transfer
+        copy_only: If True, always copy and never move/rename the source file
         
     Returns:
         True if transfer was successful, False if source doesn't exist
@@ -226,16 +228,20 @@ def transfer_manifest_file(
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     
-    try:
-        # Try to move first (atomic on same filesystem)
-        source.rename(dest)
-        return True
-    except FileNotFoundError:
-        # Source doesn't exist
+    if not copy_only:
+        try:
+            # Try to move first (atomic on same filesystem)
+            source.rename(dest)
+            return True
+        except FileNotFoundError:
+            # Source doesn't exist
+            return False
+        except OSError:
+            # Fall back to copy if rename fails (cross-filesystem)
+            pass
+    
+    if copy_only and not source.exists():
         return False
-    except OSError:
-        # Fall back to copy+delete if rename fails (cross-filesystem)
-        pass
 
     # Copy with temp file for atomicity using secure tempfile
     fd, temp_path_str = tempfile.mkstemp(suffix='.tmp', dir=str(dest.parent))
@@ -261,7 +267,7 @@ def transfer_manifest_file(
         # Atomic rename
         temp_path.rename(dest)
         
-        if delete_source:
+        if delete_source and not copy_only:
             source.unlink()
         return True
         

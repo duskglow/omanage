@@ -105,6 +105,8 @@ Commands:
   refresh     Refresh model index from Ollama
   freeze      Move a model's blob to remote storage
   thaw        Move a model's blob back to base storage
+  export      Copy a model's blob to remote storage without deleting the source
+  import      Copy a model's blob from remote storage without deleting the source
   verify      Verify model file locations match index
 
 Use 'omanage <command> --help' for more information about a command.
@@ -345,6 +347,91 @@ def cmd_thaw(args: argparse.Namespace) -> int:
             return 0
         else:
             print(f"Model '{model_name}' thaw failed: {result.get('message', 'Unknown error')}")
+            return 1
+            
+    except ModelNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ModelAlreadyThawedError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except StorageNotConfiguredError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except FileOperationError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Handle the export command."""
+    config_dir = Path.cwd()
+    model_name = args.model_name
+    compress = args.compress
+    
+    # Validate model name
+    try:
+        validate_model_name(model_name)
+    except InvalidModelNameError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    
+    # Use API for exporting
+    api = OmanageAPI(config_dir)
+    
+    try:
+        result = api.export_model(model_name, compress)
+        
+        if result['success']:
+            print(f"\nModel '{model_name}' exported successfully.")
+            return 0
+        else:
+            print(f"Model '{model_name}' export failed: {result.get('message', 'Unknown error')}")
+            return 1
+            
+    except ModelNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except ModelAlreadyFrozenError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except StorageNotConfiguredError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except FileOperationError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Handle the import command."""
+    config_dir = Path.cwd()
+    model_name = args.model_name
+    
+    # Validate model name
+    try:
+        validate_model_name(model_name)
+    except InvalidModelNameError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    
+    # Use API for importing
+    api = OmanageAPI(config_dir)
+    
+    try:
+        result = api.import_model(model_name)
+        
+        if result['success']:
+            print(f"\nModel '{model_name}' imported successfully.")
+            return 0
+        else:
+            print(f"Model '{model_name}' import failed: {result.get('message', 'Unknown error')}")
             return 1
             
     except ModelNotFoundError as e:
