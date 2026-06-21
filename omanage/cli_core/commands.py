@@ -152,82 +152,25 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_init(args: argparse.Namespace) -> int:
     """Handle the init command."""
     config_dir = Path.cwd()
-    config = ConfigManager(config_dir)
-    index = IndexManager(config_dir)
+    target_model = getattr(args, 'model_name', None)
     
-    # Initialize config if needed
-    config.initialize()
+    api = OmanageAPI(config_dir)
     
-    # Initialize index if needed
-    index.initialize()
-    
-    # Load config to check storage paths for state detection
-    config.load()
-    base_storage = config.get('baseStorage')
-    remote_storage = config.get('remoteStorage')
-    
-    # Get models from Ollama
     try:
-        models = get_ollama_models()
+        initialized = api.initialize(model_name=target_model)
     except (CliError, SubprocessError, OmanageAPIError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     
-    if not models:
-        print("No models found in Ollama. Run 'ollama list' to see installed models.")
+    if not initialized:
+        print("No models found in Ollama or remote storage.")
         return 0
     
-    # Filter by model name if specified
-    target_model = getattr(args, 'model_name', None)
-    if target_model:
-        validate_model_name(target_model)
-        models = [m for m in models if m['name'] == target_model]
-        if not models:
-            print(f"Model '{target_model}' not found in Ollama.")
-            return 1
-    
-    print(f"Processing {len(models)} model(s)...")
-    
-    def _detect_frozen(blob_name: str) -> Tuple[bool, bool]:
-        """Detect whether a model blob is on remote storage."""
-        if not base_storage or not remote_storage:
-            return False, False
-        base_blob = Path(base_storage) / blob_name
-        remote_blob = Path(remote_storage) / blob_name
-        if base_blob.exists():
-            return False, False
-        if remote_blob.exists():
-            # Detect compression by reading magic bytes
-            from omanage.utils import detect_compression
-            return True, detect_compression(remote_blob)
-        return False, False
-    
-    try:
-        for model in models:
-            model_name = model['name']
-            print(f"  Processing {model_name}...")
-            
-            # Get blob info
-            blob_info = get_model_blob_info(model_name)
-            if blob_info:
-                frozen, compressed = _detect_frozen(blob_info['blobName'])
-                index.set_model(
-                    model_name=model_name,
-                    blob_sha=blob_info['blobSha'],
-                    blob_name=blob_info['blobName'],
-                    frozen=frozen,
-                    compressed=compressed
-                )
-                status = "frozen" if frozen else "thawed"
-                print(f"    Added blob: {blob_info['blobSha']} ({status})")
-            else:
-                print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
-    except KeyboardInterrupt:
-        print("\nOperation cancelled. Saving partial progress...", file=sys.stderr)
-    finally:
-        # Save index (always, even on partial progress or unexpected errors)
-        index.save()
-        print(f"\nInitialized {len(models)} model(s) in index.")
+    print(f"Processing {len(initialized)} model(s)...")
+    for model in initialized:
+        status = "frozen" if model.get('frozen', False) else "thawed"
+        print(f"  {model['name']}: {model['blobSha']} ({status})")
+    print(f"\nInitialized {len(initialized)} model(s) in index.")
     
     return 0
 

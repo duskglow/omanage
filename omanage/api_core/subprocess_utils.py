@@ -178,7 +178,8 @@ def get_model_blob_info(model_name: str, ollama_binary: Optional[str] = None) ->
     for line in result.stdout.split('\n'):
         if line.startswith("FROM "):
             from_path = line[5:].strip()
-            blob_name = from_path.rsplit('/', 1)[-1] if '/' in from_path else from_path
+            # Use Path.name so the extraction works on both Unix and Windows paths
+            blob_name = Path(from_path).name
             return {
                 "blobSha": blob_name,  # Ollama uses SHA256 digest as blob identifier/filename
                 "blobName": blob_name  # Full blob filename (same as SHA in Ollama's convention)

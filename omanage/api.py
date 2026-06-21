@@ -1,5 +1,6 @@
 """Python API for omanage - Programmatic access to Ollama model management."""
 
+import json
 import os
 import re
 import shutil
@@ -82,7 +83,7 @@ class OmanageAPI:
     
     def initialize(self, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Initialize the model index from Ollama.
+        Initialize the model index from Ollama and remote storage.
         
         Args:
             model_name: If specified, only initialize this model. Otherwise,
@@ -99,14 +100,23 @@ class OmanageAPI:
         
         models = self._get_ollama_models()
         
-        if not models:
-            return []
+        # Also discover models that exist only on remote storage (e.g., an NFS
+        # share mounted on a new machine where Ollama has not yet seen them).
+        remote_models = self._scan_remote_storage_models()
+        
+        # Merge remote-only models, using Ollama's view when a model is known locally
+        known_names = {m['name'] for m in models}
+        for remote_model in remote_models:
+            if remote_model['name'] not in known_names:
+                if model_name and remote_model['name'] != model_name:
+                    continue
+                models.append(remote_model)
         
         if model_name:
             validate_model_name(model_name)
             models = [m for m in models if m['name'] == model_name]
             if not models:
-                raise ModelNotFoundError(f"Model '{model_name}' not found in Ollama.")
+                raise ModelNotFoundError(f"Model '{model_name}' not found in Ollama or remote storage.")
         
         initialized = []
         for model in models:
@@ -114,18 +124,35 @@ class OmanageAPI:
             blob_info = self._get_model_blob_info(model_name)
             if blob_info:
                 frozen, compressed = self._detect_storage_state(blob_info['blobName'])
-                self.index.set_model(
-                    model_name=model_name,
-                    blob_sha=blob_info['blobSha'],
-                    blob_name=blob_info['blobName'],
-                    frozen=frozen,
-                    compressed=compressed
-                )
-                initialized.append({
-                    'name': model_name,
-                    'blobSha': blob_info['blobSha'],
-                    'frozen': frozen
-                })
+            elif 'blobSha' in model and 'blobName' in model:
+                # Remote-only model discovered by manifest scan
+                blob_info = {
+                    'blobSha': model['blobSha'],
+                    'blobName': model['blobName']
+                }
+                frozen, compressed = True, False
+                # Try to detect compression from the remote blob if available
+                self.config.load()
+                remote_storage = self.config.get('remoteStorage')
+                if remote_storage:
+                    remote_blob = Path(remote_storage) / model['blobName']
+                    if remote_blob.exists():
+                        compressed = detect_compression(remote_blob)
+            else:
+                continue
+            
+            self.index.set_model(
+                model_name=model_name,
+                blob_sha=blob_info['blobSha'],
+                blob_name=blob_info['blobName'],
+                frozen=frozen,
+                compressed=compressed
+            )
+            initialized.append({
+                'name': model_name,
+                'blobSha': blob_info['blobSha'],
+                'frozen': frozen
+            })
         
         self.index.save()
         return initialized
@@ -851,9 +878,105 @@ class OmanageAPI:
             if result is None:
                 return None
             return result
-        except SubprocessError:
+        except SubprocessError as e:
+            err = str(e).lower()
+            # A specific "model not found" response means Ollama is installed but
+            # doesn't know this model yet (e.g., remote-only models). Return None
+            # so callers can fall back to other sources (manifest scan, index).
+            if "not found" in err and "model" in err:
+                return None
             raise OllamaNotInstalledError("Ollama not found. Please install Ollama first.")
     
+    def _scan_remote_storage_models(self) -> List[Dict[str, str]]:
+        """
+        Scan remote storage manifests for models not known to local Ollama.
+
+        Walks the remote manifests directory (e.g.,
+        <remoteStorage>/../manifests/registry.ollama.ai/library/<model>/<tag>)
+        and extracts model names plus their model-weight blob digest.
+
+        Returns:
+            List of dictionaries with 'name', 'blobSha', and 'blobName' keys for
+            each remote-only model whose model blob exists in remote storage.
+        """
+        self.config.load()
+        remote_storage = self.config.get('remoteStorage')
+        if not remote_storage:
+            return []
+
+        remote_storage_path = Path(remote_storage).resolve()
+        remote_manifest_root = remote_storage_path.parent / MANIFEST_BASE_DIR / MANIFEST_REGISTRY_PATH
+
+        if not remote_manifest_root.exists():
+            return []
+
+        discovered: List[Dict[str, str]] = []
+
+        for manifest_path in remote_manifest_root.rglob('*'):
+            if not manifest_path.is_file():
+                continue
+
+            try:
+                # Reconstruct model name from manifest path
+                relative = manifest_path.relative_to(remote_manifest_root)
+                parts = relative.parts
+                if len(parts) < 2:
+                    continue
+
+                tag = parts[-1]
+                model = '/'.join(parts[:-1])
+                model_name = f"{model}:{tag}"
+
+                # Validate model name components
+                try:
+                    validate_model_name(model_name)
+                except InvalidModelNameError:
+                    continue
+
+                # Parse manifest JSON
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+
+                layers = manifest.get('layers', [])
+                if not isinstance(layers, list):
+                    continue
+
+                model_digest = None
+                for layer in layers:
+                    if not isinstance(layer, dict):
+                        continue
+                    media_type = layer.get('mediaType', '')
+                    if media_type == 'application/vnd.ollama.image.model':
+                        model_digest = layer.get('digest', '')
+                        break
+
+                if not model_digest or not model_digest.startswith('sha256:'):
+                    continue
+
+                blob_name = model_digest.replace('sha256:', 'sha256-', 1)
+                blob_sha = blob_name
+
+                # Validate blob name to prevent traversal
+                if not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+                    continue
+
+                # Only report if the referenced blob actually exists in remote storage
+                remote_blob = remote_storage_path / blob_name
+                if not remote_blob.exists():
+                    continue
+
+                discovered.append({
+                    'name': model_name,
+                    'blobSha': blob_sha,
+                    'blobName': blob_name,
+                })
+
+            except (OSError, json.JSONDecodeError, ValueError):
+                # Skip unreadable or malformed manifests
+                continue
+
+        return discovered
+
     def _detect_storage_state(self, blob_name: str) -> Tuple[bool, bool]:
         """
         Detect whether a model blob is currently in base or remote storage.
