@@ -3,7 +3,7 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from ..config import ConfigManager, ConfigError
 from ..index import IndexManager
@@ -161,6 +161,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     # Initialize index if needed
     index.initialize()
     
+    # Load config to check storage paths for state detection
+    config.load()
+    base_storage = config.get('baseStorage')
+    remote_storage = config.get('remoteStorage')
+    
     # Get models from Ollama
     try:
         models = get_ollama_models()
@@ -183,6 +188,20 @@ def cmd_init(args: argparse.Namespace) -> int:
     
     print(f"Processing {len(models)} model(s)...")
     
+    def _detect_frozen(blob_name: str) -> Tuple[bool, bool]:
+        """Detect whether a model blob is on remote storage."""
+        if not base_storage or not remote_storage:
+            return False, False
+        base_blob = Path(base_storage) / blob_name
+        remote_blob = Path(remote_storage) / blob_name
+        if base_blob.exists():
+            return False, False
+        if remote_blob.exists():
+            # Detect compression by reading magic bytes
+            from omanage.utils import detect_compression
+            return True, detect_compression(remote_blob)
+        return False, False
+    
     try:
         for model in models:
             model_name = model['name']
@@ -191,14 +210,16 @@ def cmd_init(args: argparse.Namespace) -> int:
             # Get blob info
             blob_info = get_model_blob_info(model_name)
             if blob_info:
+                frozen, compressed = _detect_frozen(blob_info['blobName'])
                 index.set_model(
                     model_name=model_name,
                     blob_sha=blob_info['blobSha'],
                     blob_name=blob_info['blobName'],
-                    frozen=False,
-                    compressed=False
+                    frozen=frozen,
+                    compressed=compressed
                 )
-                print(f"    Added blob: {blob_info['blobSha']}")
+                status = "frozen" if frozen else "thawed"
+                print(f"    Added blob: {blob_info['blobSha']} ({status})")
             else:
                 print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
     except KeyboardInterrupt:
@@ -224,6 +245,16 @@ def cmd_refresh(args: argparse.Namespace) -> int:
         print(f"Error loading index: {e}", file=sys.stderr)
         return 1
     
+    # Load config to check storage paths for state detection
+    try:
+        config.load()
+    except (OSError, ValueError, ConfigError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        return 1
+    
+    base_storage = config.get('baseStorage')
+    remote_storage = config.get('remoteStorage')
+    
     # Get models from Ollama
     try:
         models = get_ollama_models()
@@ -246,20 +277,29 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     
     print(f"Refreshing {len(models)} model(s)...")
     
+    def _detect_frozen(blob_name: str) -> Tuple[bool, bool]:
+        """Detect whether a model blob is on remote storage."""
+        if not base_storage or not remote_storage:
+            return False, False
+        base_blob = Path(base_storage) / blob_name
+        remote_blob = Path(remote_storage) / blob_name
+        if base_blob.exists():
+            return False, False
+        if remote_blob.exists():
+            from omanage.utils import detect_compression
+            return True, detect_compression(remote_blob)
+        return False, False
+    
     try:
         for model in models:
             model_name = model['name']
             print(f"  Refreshing {model_name}...")
             
-            # Get current metadata if exists
-            current_meta = index.get_model(model_name)
-            
             # Get blob info
             blob_info = get_model_blob_info(model_name)
             if blob_info:
-                # Preserve frozen/compressed status if model already in index
-                frozen = current_meta.get('frozen', False) if current_meta else False
-                compressed = current_meta.get('compressed', False) if current_meta else False
+                # Detect actual storage state; fall back to existing index state if detection unavailable
+                frozen, compressed = _detect_frozen(blob_info['blobName'])
                 
                 index.set_model(
                     model_name=model_name,
@@ -268,7 +308,8 @@ def cmd_refresh(args: argparse.Namespace) -> int:
                     frozen=frozen,
                     compressed=compressed
                 )
-                print(f"    Updated blob: {blob_info['blobSha']}")
+                status = "frozen" if frozen else "thawed"
+                print(f"    Updated blob: {blob_info['blobSha']} ({status})")
             else:
                 print(f"    Warning: Could not extract blob info for {model_name}", file=sys.stderr)
     except KeyboardInterrupt:

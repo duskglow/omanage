@@ -113,16 +113,18 @@ class OmanageAPI:
             model_name = model['name']
             blob_info = self._get_model_blob_info(model_name)
             if blob_info:
+                frozen, compressed = self._detect_storage_state(blob_info['blobName'])
                 self.index.set_model(
                     model_name=model_name,
                     blob_sha=blob_info['blobSha'],
                     blob_name=blob_info['blobName'],
-                    frozen=False,
-                    compressed=False
+                    frozen=frozen,
+                    compressed=compressed
                 )
                 initialized.append({
                     'name': model_name,
-                    'blobSha': blob_info['blobSha']
+                    'blobSha': blob_info['blobSha'],
+                    'frozen': frozen
                 })
         
         self.index.save()
@@ -852,6 +854,40 @@ class OmanageAPI:
         except SubprocessError:
             raise OllamaNotInstalledError("Ollama not found. Please install Ollama first.")
     
+    def _detect_storage_state(self, blob_name: str) -> Tuple[bool, bool]:
+        """
+        Detect whether a model blob is currently in base or remote storage.
+
+        Args:
+            blob_name: Name of the blob file.
+
+        Returns:
+            Tuple of (frozen, compressed) where frozen=True means the blob is in
+            remote storage and compressed=True means the remote blob is gzipped.
+            Defaults to (False, False) if storage paths are not configured.
+        """
+        self.config.load()
+        base_storage = self.config.get('baseStorage')
+        remote_storage = self.config.get('remoteStorage')
+
+        if not base_storage or not remote_storage:
+            return False, False
+
+        base_path = Path(base_storage)
+        remote_path = Path(remote_storage)
+
+        base_blob = base_path / blob_name
+        remote_blob = remote_path / blob_name
+
+        if base_blob.exists():
+            return False, False
+
+        if remote_blob.exists():
+            return True, detect_compression(remote_blob)
+
+        # Not found in either location; default to thawed
+        return False, False
+
     def _get_manifest_paths(self, model: str, tag: str, base_storage: str, remote_storage: str) -> Tuple[Path, Path]:
         """
         Get the manifest paths for a model based on its storage location.
