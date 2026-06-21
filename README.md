@@ -43,6 +43,8 @@ python -m omanage [command]
 | `refresh` | Refresh model index from Ollama |
 | `freeze <model>` | Move a model's blob to remote storage |
 | `thaw <model>` | Move a model's blob back to base storage |
+| `export <model>` | Copy a model's blob to remote storage without deleting the source |
+| `import <model>` | Copy a model's blob from remote storage without deleting the source |
 | `verify` | Verify model file locations match index |
 
 ### Usage Examples
@@ -65,6 +67,16 @@ omanage freeze llama3:8b
 #### Thaw a model
 ```bash
 omanage thaw llama3:8b
+```
+
+#### Export a model (copy to remote storage, keep local source)
+```bash
+omanage export llama3:8b
+```
+
+#### Import a model (copy from remote storage, keep remote source)
+```bash
+omanage import llama3:8b
 ```
 
 #### Set configuration

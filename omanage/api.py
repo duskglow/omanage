@@ -42,7 +42,8 @@ from .api_core.errors import (
 from .api_core.locking import _FileLock
 from .api_core.file_utils import (
     atomic_copy_with_temp,
-    create_secure_tempfile,
+    apply_ollama_permissions,
+    ensure_ollama_directory,
     transfer_manifest_file,
 )
 
@@ -240,13 +241,19 @@ class OmanageAPI:
             raise FileOperationError(
                 f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
             )
-        dest_dir = self._find_blob_directory(remote_storage)
+        dest_dir = self._find_blob_directory(
+            remote_storage,
+            mirror_dir=self._relative_blob_dir(base_storage, source_path)
+        )
         dest_path = dest_dir / model_meta['blobName']
         
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, base_path, "source path")
         validate_path_traversal(dest_path, remote_path, "destination path")
         
+        # Create destination directory and apply permissions before locking
+        ensure_ollama_directory(dest_path.parent)
+
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
         
@@ -258,8 +265,6 @@ class OmanageAPI:
             # Re-check after acquiring lock
             if dest_path.exists():
                 raise FileOperationError(f"Destination already exists: {dest_path}")
-            
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
             
             file_size = source_path.stat().st_size
             
@@ -275,6 +280,7 @@ class OmanageAPI:
                 
                 if not dest_path.exists():
                     raise FileOperationError("Destination file not created")
+                apply_ollama_permissions(dest_path, is_directory=False)
                 
                 # Handle manifest file if it exists
                 model, tag = parse_model_name(model_name)
@@ -287,6 +293,14 @@ class OmanageAPI:
                     result = transfer_manifest_file(base_manifest_path, remote_manifest_path, delete_source=True)
                     if not result:
                         raise FileOperationError(f"Failed to transfer manifest file from {base_manifest_path} to {remote_manifest_path}")
+                    apply_ollama_permissions(remote_manifest_path, is_directory=False)
+                    self._sync_shared_blobs(
+                        base_storage,
+                        remote_storage,
+                        model_meta['blobName'],
+                        base_manifest_path,
+                        mirror_dir=self._relative_blob_dir(base_storage, source_path)
+                    )
                 
                 self.index.set_model(
                     model_name=model_name,
@@ -375,13 +389,19 @@ class OmanageAPI:
             raise FileOperationError(
                 f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
             )
-        dest_dir = self._find_blob_directory(base_storage)
+        dest_dir = self._find_blob_directory(
+            base_storage,
+            mirror_dir=self._relative_blob_dir(remote_storage, source_path)
+        )
         dest_path = dest_dir / model_meta['blobName']
         
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, remote_path, "source path")
         validate_path_traversal(dest_path, base_path, "destination path")
         
+        # Create destination directory and apply permissions before locking
+        ensure_ollama_directory(dest_path.parent)
+
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
         
@@ -393,8 +413,6 @@ class OmanageAPI:
             # Re-check after acquiring lock
             if dest_path.exists():
                 raise FileOperationError(f"Destination already exists: {dest_path}")
-            
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
             
             file_size = source_path.stat().st_size
             is_compressed = detect_compression(source_path) or model_meta.get('compressed', False)
@@ -411,6 +429,7 @@ class OmanageAPI:
                 
                 if not dest_path.exists():
                     raise FileOperationError("Destination file not created")
+                apply_ollama_permissions(dest_path, is_directory=False)
                 
                 # Handle manifest file if it exists
                 model, tag = parse_model_name(model_name)
@@ -423,6 +442,14 @@ class OmanageAPI:
                     result = transfer_manifest_file(remote_manifest_path, base_manifest_path, delete_source=True)
                     if not result:
                         raise FileOperationError(f"Failed to transfer manifest file from {remote_manifest_path} to {base_manifest_path}")
+                    apply_ollama_permissions(base_manifest_path, is_directory=False)
+                    self._sync_shared_blobs(
+                        remote_storage,
+                        base_storage,
+                        model_meta['blobName'],
+                        remote_manifest_path,
+                        mirror_dir=self._relative_blob_dir(remote_storage, source_path)
+                    )
                 
                 # After successful thaw, the blob is always decompressed in base storage
                 self.index.set_model(
@@ -517,12 +544,18 @@ class OmanageAPI:
             raise FileOperationError(
                 f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
             )
-        dest_dir = self._find_blob_directory(remote_storage)
+        dest_dir = self._find_blob_directory(
+            remote_storage,
+            mirror_dir=self._relative_blob_dir(base_storage, source_path)
+        )
         dest_path = dest_dir / model_meta['blobName']
 
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, base_path, "source path")
         validate_path_traversal(dest_path, remote_path, "destination path")
+
+        # Create destination directory and apply permissions before locking
+        ensure_ollama_directory(dest_path.parent)
 
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
@@ -536,8 +569,6 @@ class OmanageAPI:
             if dest_path.exists():
                 raise FileOperationError(f"Destination already exists: {dest_path}")
 
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-
             file_size = source_path.stat().st_size
 
             try:
@@ -550,6 +581,7 @@ class OmanageAPI:
 
                 if not dest_path.exists():
                     raise FileOperationError("Destination file not created")
+                apply_ollama_permissions(dest_path, is_directory=False)
 
                 # Copy manifest file if it exists (do not move/delete source)
                 model, tag = parse_model_name(model_name)
@@ -566,6 +598,14 @@ class OmanageAPI:
                     )
                     if not result:
                         raise FileOperationError(f"Failed to copy manifest file from {base_manifest_path} to {remote_manifest_path}")
+                    apply_ollama_permissions(remote_manifest_path, is_directory=False)
+                    self._sync_shared_blobs(
+                        base_storage,
+                        remote_storage,
+                        model_meta['blobName'],
+                        base_manifest_path,
+                        mirror_dir=self._relative_blob_dir(base_storage, source_path)
+                    )
 
                 self.index.set_model(
                     model_name=model_name,
@@ -657,12 +697,18 @@ class OmanageAPI:
             raise FileOperationError(
                 f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
             )
-        dest_dir = self._find_blob_directory(base_storage)
+        dest_dir = self._find_blob_directory(
+            base_storage,
+            mirror_dir=self._relative_blob_dir(remote_storage, source_path)
+        )
         dest_path = dest_dir / model_meta['blobName']
 
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, remote_path, "source path")
         validate_path_traversal(dest_path, base_path, "destination path")
+
+        # Create destination directory and apply permissions before locking
+        ensure_ollama_directory(dest_path.parent)
 
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
@@ -675,8 +721,6 @@ class OmanageAPI:
             # Re-check after acquiring lock
             if dest_path.exists():
                 raise FileOperationError(f"Destination already exists: {dest_path}")
-
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
 
             file_size = source_path.stat().st_size
             is_compressed = detect_compression(source_path) or model_meta.get('compressed', False)
@@ -691,6 +735,7 @@ class OmanageAPI:
 
                 if not dest_path.exists():
                     raise FileOperationError("Destination file not created")
+                apply_ollama_permissions(dest_path, is_directory=False)
 
                 # Copy manifest file if it exists (do not move/delete source)
                 model, tag = parse_model_name(model_name)
@@ -707,6 +752,14 @@ class OmanageAPI:
                     )
                     if not result:
                         raise FileOperationError(f"Failed to copy manifest file from {remote_manifest_path} to {base_manifest_path}")
+                    apply_ollama_permissions(base_manifest_path, is_directory=False)
+                    self._sync_shared_blobs(
+                        remote_storage,
+                        base_storage,
+                        model_meta['blobName'],
+                        remote_manifest_path,
+                        mirror_dir=self._relative_blob_dir(remote_storage, source_path)
+                    )
 
                 # After successful import, the blob is always decompressed in base storage
                 self.index.set_model(
@@ -1069,6 +1122,104 @@ class OmanageAPI:
                 return blob_path
         return None
 
+    def _parse_manifest_blobs(self, manifest_path: Path) -> List[Dict[str, Any]]:
+        """
+        Parse all sha256 blob references from an Ollama manifest.
+
+        Returns a list of dicts with keys:
+          - 'digest': original digest string (sha256:...)
+          - 'blob_name': sha256-... filename
+          - 'media_type': layer mediaType
+          - 'is_main': True if this is the model weights layer
+        """
+        try:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return []
+
+        layers = manifest.get('layers', [])
+        if not isinstance(layers, list):
+            return []
+
+        # First identify the main model blob by explicit media type or size fallback
+        main_digest = None
+        for layer in layers:
+            if isinstance(layer, dict) and layer.get('mediaType') == 'application/vnd.ollama.image.model':
+                digest = layer.get('digest', '')
+                if digest.startswith('sha256:'):
+                    main_digest = digest
+                    break
+
+        if main_digest is None:
+            candidate_dirs = self._discover_blob_dirs(manifest_path.parent.parent)
+            main_digest = self._extract_model_blob_digest(layers, candidate_dirs)
+
+        blobs: List[Dict[str, Any]] = []
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            digest = layer.get('digest', '')
+            if not digest.startswith('sha256:'):
+                continue
+            blob_name = digest.replace('sha256:', 'sha256-', 1)
+            if not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+                continue
+            blobs.append({
+                'digest': digest,
+                'blob_name': blob_name,
+                'media_type': layer.get('mediaType', ''),
+                'is_main': digest == main_digest,
+            })
+
+        return blobs
+
+    def _sync_shared_blobs(
+        self,
+        src_storage: str,
+        dst_storage: str,
+        main_blob_name: str,
+        manifest_path: Path,
+        mirror_dir: Optional[Path] = None
+    ) -> Dict[str, Any]:
+        """
+        Copy all non-main blobs referenced by a manifest from src to dst if missing.
+
+        Args:
+            src_storage: Source storage root.
+            dst_storage: Destination storage root.
+            main_blob_name: The main model blob filename (not copied here).
+            manifest_path: Path to the manifest to parse for shared blobs.
+            mirror_dir: Optional relative subdirectory to place shared blobs under.
+
+        Returns:
+            Dict with 'copied' (list of blob names) and 'skipped' (list of blob names).
+        """
+        result = {'copied': [], 'skipped': []}
+        blobs = self._parse_manifest_blobs(manifest_path)
+        if not blobs:
+            return result
+
+        dst_dir = self._find_blob_directory(dst_storage, mirror_dir=mirror_dir)
+
+        for blob in blobs:
+            blob_name = blob['blob_name']
+            if blob_name == main_blob_name:
+                continue
+            src_blob = self._find_existing_blob(src_storage, blob_name)
+            if src_blob is None:
+                continue
+            dst_blob = dst_dir / blob_name
+            if dst_blob.exists():
+                result['skipped'].append(blob_name)
+                continue
+            ensure_ollama_directory(dst_blob.parent)
+            atomic_copy_with_temp(src_blob, dst_blob)
+            apply_ollama_permissions(dst_blob, is_directory=False)
+            result['copied'].append(blob_name)
+
+        return result
+
     def _extract_model_blob_digest(self, layers: List[Any], candidate_blob_dirs: List[Path]) -> Optional[str]:
         """
         Determine the model-weight blob digest from a manifest's layers.
@@ -1181,22 +1332,49 @@ class OmanageAPI:
 
         return None
 
-    def _find_blob_directory(self, storage_path_str: str, blob_name: Optional[str] = None) -> Path:
+    def _relative_blob_dir(self, storage_path_str: str, blob_path: Path) -> Optional[Path]:
         """
-        Determine the directory where blobs live under a storage root.
-
-        If a specific blob is known, returns the directory that contains it.
-        Otherwise returns the most plausible existing blob directory, creating
-        no new directories.
+        Compute the subdirectory (relative to the storage root) containing a blob.
 
         Args:
             storage_path_str: Root storage path.
-            blob_name: Optional known blob name to locate.
+            blob_path: Absolute path to the blob.
+
+        Returns:
+            Relative Path of the blob's parent directory under the storage root,
+            or None if the blob is not under the storage root.
+        """
+        storage_path = Path(storage_path_str).resolve()
+        try:
+            return blob_path.parent.relative_to(storage_path)
+        except ValueError:
+            return None
+
+    def _find_blob_directory(
+        self,
+        storage_path_str: str,
+        blob_name: Optional[str] = None,
+        mirror_dir: Optional[Path] = None
+    ) -> Path:
+        """
+        Determine the directory where blobs should live under a storage root.
+
+        Args:
+            storage_path_str: Root storage path.
+            blob_name: Optional known blob name to locate an existing directory.
+            mirror_dir: Optional relative subdirectory to mirror from the other side.
 
         Returns:
             Path to the blob directory.
         """
         storage_path = Path(storage_path_str).resolve()
+
+        # If the caller has told us where the other side keeps its blobs, mirror
+        # that subdirectory under this storage root.  This ensures that when, e.g.,
+        # remote blobs live in remoteStorage/ollama-models/, imports create
+        # baseStorage/ollama-models/ rather than dumping blobs in the root.
+        if mirror_dir and not mirror_dir.is_absolute():
+            return storage_path / mirror_dir
 
         if blob_name:
             blob_path = self._find_existing_blob(storage_path_str, blob_name)

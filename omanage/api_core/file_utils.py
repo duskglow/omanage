@@ -2,12 +2,74 @@
 
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
 
 from ..utils import validate_path_traversal, PathTraversalError, CHUNK_SIZE
 from .errors import FileOperationError
+
+
+def apply_ollama_permissions(path: Path, is_directory: bool = False) -> bool:
+    """
+    Set ownership and permissions on a path so Ollama can read it.
+
+    On Linux, when running as root, this chowns the path to the 'ollama' user
+    and group and sets mode 0755 for directories or 0644 for files.  On other
+    platforms, when not root, or if the 'ollama' user/group does not exist,
+    the function returns False without raising an error.
+
+    Args:
+        path: Path to a file or directory.
+        is_directory: True if path is a directory, False for a file.
+
+    Returns:
+        True if ownership/permissions were applied, False otherwise.
+    """
+    if not sys.platform.startswith('linux'):
+        return False
+
+    try:
+        if os.geteuid() != 0:
+            return False
+    except AttributeError:
+        return False
+
+    try:
+        import pwd  # type: ignore[import-not-found]
+        import grp  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+
+    try:
+        ollama_uid = pwd.getpwnam('ollama').pw_uid
+        ollama_gid = grp.getgrnam('ollama').gr_gid
+    except (KeyError, OSError):
+        return False
+
+    try:
+        os.chown(path, ollama_uid, ollama_gid)
+        os.chmod(path, 0o755 if is_directory else 0o644)
+        return True
+    except OSError:
+        return False
+
+
+def ensure_ollama_directory(path: Path) -> None:
+    """
+    Create a directory (and its parents) and apply Ollama permissions if possible.
+
+    Parent directories that already exist are left untouched; newly created
+    directories get 0755/ollama:ollama when running as root on Linux.
+    """
+    if path.exists():
+        if path.is_dir():
+            apply_ollama_permissions(path, is_directory=True)
+        return
+
+    path.mkdir(parents=True, exist_ok=True)
+    apply_ollama_permissions(path, is_directory=True)
 
 
 def atomic_copy_with_lock(src: Path, dst: Path) -> None:
@@ -279,5 +341,3 @@ def transfer_manifest_file(
         except OSError:
             pass
         raise FileOperationError(f"Manifest transfer failed: {e}")
-
-

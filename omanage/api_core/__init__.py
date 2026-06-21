@@ -19,6 +19,8 @@ from .file_utils import (
     atomic_copy_with_lock,
     atomic_move_with_lock,
     atomic_copy_with_temp,
+    apply_ollama_permissions,
+    ensure_ollama_directory,
     create_secure_tempfile,
     transfer_manifest_file,
 )
@@ -38,6 +40,8 @@ __all__ = [
     'atomic_copy_with_lock',
     'atomic_move_with_lock',
     'atomic_copy_with_temp',
+    'apply_ollama_permissions',
+    'ensure_ollama_directory',
     'create_secure_tempfile',
     'transfer_manifest_file',
 ]
