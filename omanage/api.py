@@ -920,11 +920,10 @@ class OmanageAPI:
             remote_storage_path / MANIFEST_BASE_DIR / MANIFEST_REGISTRY_PATH,
         ]
 
-        # Blobs may live directly under remoteStorage or under remoteStorage/blobs/
-        candidate_blob_dirs = [
-            remote_storage_path,
-            remote_storage_path / "blobs",
-        ]
+        # Blobs may live directly under remoteStorage, under remoteStorage/blobs/,
+        # under remoteStorage/ollama-models/, or another nested directory.  Auto-detect
+        # any directory that contains at least one sha256-* file.
+        candidate_blob_dirs = self._discover_blob_dirs(remote_storage_path)
 
         discovered: List[Dict[str, str]] = []
         seen_manifests: set = set()
@@ -1003,6 +1002,44 @@ class OmanageAPI:
                     continue
 
         return discovered
+
+    def _discover_blob_dirs(self, remote_storage_path: Path) -> List[Path]:
+        """
+        Discover directories under remoteStorage that contain Ollama blob files.
+
+        Searches the top three levels of remoteStorage for directories containing
+        files whose names start with 'sha256-'. Always includes remoteStorage itself
+        and remoteStorage/blobs as fallbacks.
+
+        Args:
+            remote_storage_path: Root of remote storage.
+
+        Returns:
+            List of candidate blob directories, ordered with discovered dirs first.
+        """
+        candidates: List[Path] = [remote_storage_path]
+
+        blobs_dir = remote_storage_path / "blobs"
+        if blobs_dir.exists():
+            candidates.append(blobs_dir)
+
+        if not remote_storage_path.exists():
+            return candidates
+
+        seen = {str(remote_storage_path), str(blobs_dir)}
+
+        # Search a few levels deep for sha256-* files
+        for path in remote_storage_path.rglob('*'):
+            if not path.is_file():
+                continue
+            if path.name.startswith('sha256-'):
+                directory = path.parent
+                dir_str = str(directory)
+                if dir_str not in seen:
+                    seen.add(dir_str)
+                    candidates.append(directory)
+
+        return candidates
 
     def _find_remote_blob(self, blob_name: str, candidate_dirs: List[Path]) -> Optional[Path]:
         """
@@ -1095,13 +1132,11 @@ class OmanageAPI:
         if (base_path / blob_name).exists():
             return False, False
 
-        remote_candidates = [
-            Path(remote_storage) / blob_name,
-            Path(remote_storage) / "blobs" / blob_name,
-        ]
-        for remote_blob in remote_candidates:
-            if remote_blob.exists():
-                return True, detect_compression(remote_blob)
+        # Auto-discover remote blob directories just like the manifest scanner does
+        remote_candidates = self._discover_blob_dirs(Path(remote_storage))
+        remote_blob = self._find_remote_blob(blob_name, remote_candidates)
+        if remote_blob is not None:
+            return True, detect_compression(remote_blob)
 
         # Not found in either location; default to thawed
         return False, False
