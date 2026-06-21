@@ -895,87 +895,181 @@ class OmanageAPI:
         <remoteStorage>/../manifests/registry.ollama.ai/library/<model>/<tag>)
         and extracts model names plus their model-weight blob digest.
 
+        Supports both layout conventions:
+          - remoteStorage points to the blobs directory (manifests sibling)
+          - remoteStorage points to the parent models directory (manifests child)
+
         Returns:
             List of dictionaries with 'name', 'blobSha', and 'blobName' keys for
             each remote-only model whose model blob exists in remote storage.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         self.config.load()
         remote_storage = self.config.get('remoteStorage')
         if not remote_storage:
+            logger.debug("remoteStorage not configured, skipping remote manifest scan")
             return []
 
         remote_storage_path = Path(remote_storage).resolve()
-        remote_manifest_root = remote_storage_path.parent / MANIFEST_BASE_DIR / MANIFEST_REGISTRY_PATH
 
-        if not remote_manifest_root.exists():
-            return []
+        # Try both common layout conventions
+        candidate_roots = [
+            remote_storage_path.parent / MANIFEST_BASE_DIR / MANIFEST_REGISTRY_PATH,
+            remote_storage_path / MANIFEST_BASE_DIR / MANIFEST_REGISTRY_PATH,
+        ]
+
+        # Blobs may live directly under remoteStorage or under remoteStorage/blobs/
+        candidate_blob_dirs = [
+            remote_storage_path,
+            remote_storage_path / "blobs",
+        ]
 
         discovered: List[Dict[str, str]] = []
+        seen_manifests: set = set()
 
-        for manifest_path in remote_manifest_root.rglob('*'):
-            if not manifest_path.is_file():
+        for remote_manifest_root in candidate_roots:
+            if not remote_manifest_root.exists():
+                logger.debug("Remote manifest root does not exist: %s", remote_manifest_root)
                 continue
 
-            try:
-                # Reconstruct model name from manifest path
-                relative = manifest_path.relative_to(remote_manifest_root)
-                parts = relative.parts
-                if len(parts) < 2:
+            logger.info("Scanning remote manifests under %s", remote_manifest_root)
+
+            for manifest_path in remote_manifest_root.rglob('*'):
+                if not manifest_path.is_file():
                     continue
+                if manifest_path in seen_manifests:
+                    continue
+                seen_manifests.add(manifest_path)
 
-                tag = parts[-1]
-                model = '/'.join(parts[:-1])
-                model_name = f"{model}:{tag}"
-
-                # Validate model name components
                 try:
-                    validate_model_name(model_name)
-                except InvalidModelNameError:
-                    continue
-
-                # Parse manifest JSON
-                with open(manifest_path, 'r', encoding='utf-8') as f:
-                    manifest = json.load(f)
-
-                layers = manifest.get('layers', [])
-                if not isinstance(layers, list):
-                    continue
-
-                model_digest = None
-                for layer in layers:
-                    if not isinstance(layer, dict):
+                    # Reconstruct model name from manifest path
+                    relative = manifest_path.relative_to(remote_manifest_root)
+                    parts = relative.parts
+                    if len(parts) < 2:
+                        logger.debug("Skipping manifest with insufficient path depth: %s", manifest_path)
                         continue
-                    media_type = layer.get('mediaType', '')
-                    if media_type == 'application/vnd.ollama.image.model':
-                        model_digest = layer.get('digest', '')
-                        break
 
-                if not model_digest or not model_digest.startswith('sha256:'):
+                    tag = parts[-1]
+                    model = '/'.join(parts[:-1])
+                    model_name = f"{model}:{tag}"
+
+                    # Validate model name components
+                    try:
+                        validate_model_name(model_name)
+                    except InvalidModelNameError:
+                        logger.debug("Skipping manifest with invalid model name '%s': %s", model_name, manifest_path)
+                        continue
+
+                    # Parse manifest JSON
+                    with open(manifest_path, 'r', encoding='utf-8') as f:
+                        manifest = json.load(f)
+
+                    layers = manifest.get('layers', [])
+                    if not isinstance(layers, list):
+                        logger.debug("Skipping manifest without layers array: %s", manifest_path)
+                        continue
+
+                    model_digest = self._extract_model_blob_digest(layers, candidate_blob_dirs)
+
+                    if not model_digest or not model_digest.startswith('sha256:'):
+                        logger.debug("Could not determine model blob digest for manifest: %s", manifest_path)
+                        continue
+
+                    blob_name = model_digest.replace('sha256:', 'sha256-', 1)
+                    blob_sha = blob_name
+
+                    # Validate blob name to prevent traversal
+                    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+                        logger.debug("Invalid blob name derived from manifest: %s", blob_name)
+                        continue
+
+                    # Only report if the referenced blob actually exists in remote storage
+                    remote_blob = self._find_remote_blob(blob_name, candidate_blob_dirs)
+                    if remote_blob is None:
+                        logger.debug("Referenced blob missing from remote storage: %s", blob_name)
+                        continue
+
+                    logger.info("Discovered remote-only model %s -> %s", model_name, blob_name)
+                    discovered.append({
+                        'name': model_name,
+                        'blobSha': blob_sha,
+                        'blobName': blob_name,
+                    })
+
+                except (OSError, json.JSONDecodeError, ValueError) as e:
+                    logger.debug("Skipping unreadable or malformed manifest %s: %s", manifest_path, e)
                     continue
-
-                blob_name = model_digest.replace('sha256:', 'sha256-', 1)
-                blob_sha = blob_name
-
-                # Validate blob name to prevent traversal
-                if not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
-                    continue
-
-                # Only report if the referenced blob actually exists in remote storage
-                remote_blob = remote_storage_path / blob_name
-                if not remote_blob.exists():
-                    continue
-
-                discovered.append({
-                    'name': model_name,
-                    'blobSha': blob_sha,
-                    'blobName': blob_name,
-                })
-
-            except (OSError, json.JSONDecodeError, ValueError):
-                # Skip unreadable or malformed manifests
-                continue
 
         return discovered
+
+    def _find_remote_blob(self, blob_name: str, candidate_dirs: List[Path]) -> Optional[Path]:
+        """
+        Find an existing blob file in one of the candidate remote blob directories.
+
+        Args:
+            blob_name: Name of the blob file.
+            candidate_dirs: List of directories to check.
+
+        Returns:
+            Path to the existing blob, or None if not found in any candidate directory.
+        """
+        for directory in candidate_dirs:
+            blob_path = directory / blob_name
+            if blob_path.exists():
+                return blob_path
+        return None
+
+    def _extract_model_blob_digest(self, layers: List[Any], candidate_blob_dirs: List[Path]) -> Optional[str]:
+        """
+        Determine the model-weight blob digest from a manifest's layers.
+
+        First tries the explicit Ollama model media type. If that is absent,
+        falls back to the largest existing blob referenced by any layer digest,
+        which is almost always the model weights file.
+
+        Args:
+            layers: Manifest layers list.
+            candidate_blob_dirs: List of directories where blobs may exist.
+
+        Returns:
+            The selected blob digest (sha256:...), or None if no suitable blob found.
+        """
+        # Preferred: explicit model weights media type
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            media_type = layer.get('mediaType', '')
+            if media_type == 'application/vnd.ollama.image.model':
+                digest = layer.get('digest', '')
+                if digest.startswith('sha256:'):
+                    return digest
+
+        # Fallback: largest existing blob among all sha256 digests
+        best_digest: Optional[str] = None
+        best_size = -1
+        for layer in layers:
+            if not isinstance(layer, dict):
+                continue
+            digest = layer.get('digest', '')
+            if not digest.startswith('sha256:'):
+                continue
+            blob_name = digest.replace('sha256:', 'sha256-', 1)
+            if not re.match(r'^[a-zA-Z0-9_\-\.]+$', blob_name):
+                continue
+            blob_path = self._find_remote_blob(blob_name, candidate_blob_dirs)
+            if blob_path is None:
+                continue
+            try:
+                size = blob_path.stat().st_size
+            except OSError:
+                continue
+            if size > best_size:
+                best_size = size
+                best_digest = digest
+
+        return best_digest
 
     def _detect_storage_state(self, blob_name: str) -> Tuple[bool, bool]:
         """
@@ -997,16 +1091,17 @@ class OmanageAPI:
             return False, False
 
         base_path = Path(base_storage)
-        remote_path = Path(remote_storage)
 
-        base_blob = base_path / blob_name
-        remote_blob = remote_path / blob_name
-
-        if base_blob.exists():
+        if (base_path / blob_name).exists():
             return False, False
 
-        if remote_blob.exists():
-            return True, detect_compression(remote_blob)
+        remote_candidates = [
+            Path(remote_storage) / blob_name,
+            Path(remote_storage) / "blobs" / blob_name,
+        ]
+        for remote_blob in remote_candidates:
+            if remote_blob.exists():
+                return True, detect_compression(remote_blob)
 
         # Not found in either location; default to thawed
         return False, False
