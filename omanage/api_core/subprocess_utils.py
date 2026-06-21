@@ -1,6 +1,7 @@
 """Secure subprocess utilities for omanage - model name validation and command execution."""
 
 import subprocess
+from pathlib import Path
 from typing import List, Optional, Any
 
 from ..utils import validate_model_name, InvalidModelNameError
