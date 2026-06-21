@@ -235,15 +235,17 @@ class OmanageAPI:
         if not remote_path.exists():
             raise FileOperationError(f"Remote storage path does not exist: {remote_path}")
         
-        source_path = Path(base_storage) / model_meta['blobName']
-        dest_path = Path(remote_storage) / model_meta['blobName']
+        source_path = self._find_existing_blob(base_storage, model_meta['blobName'])
+        if source_path is None:
+            raise FileOperationError(
+                f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
+            )
+        dest_dir = self._find_blob_directory(remote_storage)
+        dest_path = dest_dir / model_meta['blobName']
         
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, base_path, "source path")
         validate_path_traversal(dest_path, remote_path, "destination path")
-        
-        if not source_path.exists():
-            raise FileOperationError(f"Blob file not found: {source_path}")
         
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
@@ -368,15 +370,17 @@ class OmanageAPI:
         if not remote_path.exists():
             raise FileOperationError(f"Remote storage path does not exist: {remote_path}")
         
-        source_path = Path(remote_storage) / model_meta['blobName']
-        dest_path = Path(base_storage) / model_meta['blobName']
+        source_path = self._find_existing_blob(remote_storage, model_meta['blobName'])
+        if source_path is None:
+            raise FileOperationError(
+                f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
+            )
+        dest_dir = self._find_blob_directory(base_storage)
+        dest_path = dest_dir / model_meta['blobName']
         
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, remote_path, "source path")
         validate_path_traversal(dest_path, base_path, "destination path")
-        
-        if not source_path.exists():
-            raise FileOperationError(f"Blob file not found: {source_path}")
         
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
@@ -508,15 +512,17 @@ class OmanageAPI:
         if not remote_path.exists():
             raise FileOperationError(f"Remote storage path does not exist: {remote_path}")
 
-        source_path = Path(base_storage) / model_meta['blobName']
-        dest_path = Path(remote_storage) / model_meta['blobName']
+        source_path = self._find_existing_blob(base_storage, model_meta['blobName'])
+        if source_path is None:
+            raise FileOperationError(
+                f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
+            )
+        dest_dir = self._find_blob_directory(remote_storage)
+        dest_path = dest_dir / model_meta['blobName']
 
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, base_path, "source path")
         validate_path_traversal(dest_path, remote_path, "destination path")
-
-        if not source_path.exists():
-            raise FileOperationError(f"Blob file not found: {source_path}")
 
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
@@ -646,15 +652,17 @@ class OmanageAPI:
         if not remote_path.exists():
             raise FileOperationError(f"Remote storage path does not exist: {remote_path}")
 
-        source_path = Path(remote_storage) / model_meta['blobName']
-        dest_path = Path(base_storage) / model_meta['blobName']
+        source_path = self._find_existing_blob(remote_storage, model_meta['blobName'])
+        if source_path is None:
+            raise FileOperationError(
+                f"Blob file not found for model '{model_name}': {model_meta['blobName']}"
+            )
+        dest_dir = self._find_blob_directory(base_storage)
+        dest_path = dest_dir / model_meta['blobName']
 
         # Validate paths don't traverse outside expected directories
         validate_path_traversal(source_path, remote_path, "source path")
         validate_path_traversal(dest_path, base_path, "destination path")
-
-        if not source_path.exists():
-            raise FileOperationError(f"Blob file not found: {source_path}")
 
         # Use file locking to prevent race conditions (cross-platform)
         dest_lock_path = dest_path.with_suffix(LOCK_FILE_SUFFIX)
@@ -785,13 +793,22 @@ class OmanageAPI:
                 continue
             
             if frozen:
-                expected_path = remote_path / blob_name
+                expected_path = self._find_existing_blob(remote_storage, blob_name)
+                expected_base = remote_path
             else:
-                expected_path = base_path / blob_name
+                expected_path = self._find_existing_blob(base_storage, blob_name)
+                expected_base = base_path
+            
+            if expected_path is None:
+                missing.append({
+                    'model': model_name,
+                    'path': str(expected_base / blob_name)
+                })
+                continue
             
             # Validate path doesn't traverse
             try:
-                validate_path_traversal(expected_path, remote_path if frozen else base_path, "expected path")
+                validate_path_traversal(expected_path, expected_base, "expected path")
             except PathTraversalError:
                 missing.append({
                     'model': model_name,
@@ -800,24 +817,18 @@ class OmanageAPI:
                 })
                 continue
             
-            if not expected_path.exists():
-                missing.append({
+            # Check compression status
+            is_compressed = detect_compression(expected_path)
+            if compressed and not is_compressed:
+                mismatched.append({
                     'model': model_name,
-                    'path': str(expected_path)
+                    'issue': 'Expected compressed but found uncompressed'
                 })
-            else:
-                # Check compression status
-                is_compressed = detect_compression(expected_path)
-                if compressed and not is_compressed:
-                    mismatched.append({
-                        'model': model_name,
-                        'issue': 'Expected compressed but found uncompressed'
-                    })
-                elif not compressed and is_compressed:
-                    mismatched.append({
-                        'model': model_name,
-                        'issue': 'Expected uncompressed but found compressed'
-                    })
+            elif not compressed and is_compressed:
+                mismatched.append({
+                    'model': model_name,
+                    'issue': 'Expected uncompressed but found compressed'
+                })
         
         if missing or mismatched:
             status = 'error' if missing else 'mismatch'
@@ -1127,19 +1138,110 @@ class OmanageAPI:
         if not base_storage or not remote_storage:
             return False, False
 
-        base_path = Path(base_storage)
-
-        if (base_path / blob_name).exists():
+        base_blob = self._find_existing_blob(base_storage, blob_name)
+        if base_blob is not None:
             return False, False
 
-        # Auto-discover remote blob directories just like the manifest scanner does
-        remote_candidates = self._discover_blob_dirs(Path(remote_storage))
-        remote_blob = self._find_remote_blob(blob_name, remote_candidates)
+        remote_blob = self._find_existing_blob(remote_storage, blob_name)
         if remote_blob is not None:
             return True, detect_compression(remote_blob)
 
         # Not found in either location; default to thawed
         return False, False
+
+    def _find_existing_blob(self, storage_path_str: str, blob_name: str) -> Optional[Path]:
+        """
+        Find an existing blob file under a storage root.
+
+        Checks common subdirectories (blobs/, ollama-models/) and falls back to
+        a recursive search if needed.
+
+        Args:
+            storage_path_str: Root storage path (e.g., baseStorage or remoteStorage).
+            blob_name: Name of the blob file to locate.
+
+        Returns:
+            Path to the existing blob, or None if not found.
+        """
+        storage_path = Path(storage_path_str).resolve()
+
+        for candidate in [
+            storage_path,
+            storage_path / "blobs",
+            storage_path / "ollama-models",
+        ]:
+            blob_path = candidate / blob_name
+            if blob_path.exists():
+                return blob_path
+
+        # Final fallback: recursive search within the storage root
+        for found in storage_path.rglob(blob_name):
+            if found.is_file():
+                return found
+
+        return None
+
+    def _find_blob_directory(self, storage_path_str: str, blob_name: Optional[str] = None) -> Path:
+        """
+        Determine the directory where blobs live under a storage root.
+
+        If a specific blob is known, returns the directory that contains it.
+        Otherwise returns the most plausible existing blob directory, creating
+        no new directories.
+
+        Args:
+            storage_path_str: Root storage path.
+            blob_name: Optional known blob name to locate.
+
+        Returns:
+            Path to the blob directory.
+        """
+        storage_path = Path(storage_path_str).resolve()
+
+        if blob_name:
+            blob_path = self._find_existing_blob(storage_path_str, blob_name)
+            if blob_path is not None:
+                return blob_path.parent
+
+        # Prefer existing directories that already contain sha256-* files
+        for candidate in [
+            storage_path / "ollama-models",
+            storage_path / "blobs",
+            storage_path,
+        ]:
+            if not candidate.exists():
+                continue
+            try:
+                if any(f.is_file() and f.name.startswith("sha256-") for f in candidate.iterdir()):
+                    return candidate
+            except OSError:
+                continue
+
+        return storage_path
+
+    def _find_manifest_directory(self, storage_path_str: str) -> Path:
+        """
+        Determine the manifest directory for a storage root.
+
+        Tries <storage>/manifests first, then <storage>/../manifests for the
+        older convention where storage points at the blobs directory.
+
+        Args:
+            storage_path_str: Root storage path.
+
+        Returns:
+            Path to the manifest directory, or a default if neither exists.
+        """
+        storage_path = Path(storage_path_str).resolve()
+
+        for candidate in [
+            storage_path / MANIFEST_BASE_DIR,
+            storage_path.parent / MANIFEST_BASE_DIR,
+        ]:
+            if candidate.exists() and candidate.is_dir():
+                return candidate
+
+        return storage_path / MANIFEST_BASE_DIR
 
     def _get_manifest_paths(self, model: str, tag: str, base_storage: str, remote_storage: str) -> Tuple[Path, Path]:
         """
@@ -1159,20 +1261,17 @@ class OmanageAPI:
         if tag:
             validate_model_name(tag)
         
-        # Use resolve() to get absolute paths for security
-        base_storage_path = Path(base_storage).resolve()
-        remote_storage_path = Path(remote_storage).resolve()
+        # Find manifest directory under each storage root
+        base_manifest_root = self._find_manifest_directory(base_storage)
+        remote_manifest_root = self._find_manifest_directory(remote_storage)
         
-        # Build manifest paths relative to the storage directory's parent
-        # Ollama convention: blobs/ and manifests/ are siblings under models/
-        # e.g., baseStorage=/home/user/.ollama/models/blobs/ -> manifests at /home/user/.ollama/models/manifests/
         manifest_dir = Path(MANIFEST_REGISTRY_PATH) / model
         
-        base_manifest_path = base_storage_path.parent / MANIFEST_BASE_DIR / manifest_dir / tag
-        remote_manifest_path = remote_storage_path.parent / MANIFEST_BASE_DIR / manifest_dir / tag
+        base_manifest_path = base_manifest_root / manifest_dir / tag
+        remote_manifest_path = remote_manifest_root / manifest_dir / tag
         
         # Validate paths don't traverse outside expected directories
-        validate_path_traversal(base_manifest_path, base_storage_path.parent, "base manifest path")
-        validate_path_traversal(remote_manifest_path, remote_storage_path.parent, "remote manifest path")
+        validate_path_traversal(base_manifest_path, base_manifest_root, "base manifest path")
+        validate_path_traversal(remote_manifest_path, remote_manifest_root, "remote manifest path")
         
         return base_manifest_path, remote_manifest_path
